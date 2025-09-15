@@ -32,9 +32,87 @@ async def run_agentic_chat(message: str, language: str | None = None) -> Dict[st
     _client: OpenAI = get_openai_client()
     lang = language or "en"
 
+    # Explicit DB dictionary and guidelines (must mirror backend/db.py)
+    db_schema = (
+        "DB schema (PostgreSQL) with types, PK/FK, nullability, constraints, and indexes:\n"
+        "- car_catalog (dictionary of cars)\n"
+        "  id SERIAL PRIMARY KEY NOT NULL\n"
+        "  make TEXT NOT NULL\n"
+        "  model TEXT NOT NULL\n"
+        "  year INTEGER NOT NULL\n"
+        "  body_type TEXT NULL\n"
+        "  fuel_type TEXT NULL\n"
+        "  trim TEXT NULL\n"
+        "  UNIQUE(make, model, year)\n"
+        "\n"
+        "- users (existing clients)\n"
+        "  id SERIAL PRIMARY KEY NOT NULL\n"
+        "  email TEXT UNIQUE NULL\n"
+        "  full_name TEXT NULL\n"
+        "  car_id INTEGER NULL REFERENCES car_catalog(id)\n"
+        "  package_plan TEXT NULL\n"
+        "  warranty_status TEXT NULL  -- indexed\n"
+        "  warranty_start TIMESTAMP NULL\n"
+        "  warranty_end TIMESTAMP NULL\n"
+        "  last_interaction_at TIMESTAMP NULL\n"
+        "  created_at TIMESTAMP NOT NULL DEFAULT NOW()\n"
+        "  INDEX idx_users_warranty_status ON users(warranty_status)\n"
+        "  INDEX idx_users_package_plan ON users(package_plan)\n"
+        "\n"
+        "- warranty_claims (claims)\n"
+        "  claim_id SERIAL PRIMARY KEY NOT NULL\n"
+        "  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE\n"
+        "  car_id INTEGER NOT NULL REFERENCES car_catalog(id) ON DELETE RESTRICT\n"
+        "  opened_at TIMESTAMP NOT NULL\n"
+        "  closed_at TIMESTAMP NULL\n"
+        "  status TEXT NOT NULL  -- indexed; one of {'open','in_review','approved','rejected','closed'}\n"
+        "  description TEXT NULL\n"
+        "  INDEX idx_claims_status ON warranty_claims(status)\n"
+        "  INDEX idx_claims_user_car ON warranty_claims(user_id, car_id)\n"
+        "\n"
+        "- sales_pipeline (prospects)\n"
+        "  id SERIAL PRIMARY KEY NOT NULL\n"
+        "  prospect_email TEXT NULL\n"
+        "  stage TEXT NOT NULL  -- indexed; one of {'lead','qualified','proposal','negotiation','won','lost'}\n"
+        "  car_id INTEGER NULL REFERENCES car_catalog(id)\n"
+        "  notes TEXT NULL\n"
+        "  created_at TIMESTAMP NOT NULL DEFAULT NOW()\n"
+        "  last_activity_at TIMESTAMP NULL\n"
+        "  next_follow_up_at TIMESTAMP NULL\n"
+        "  INDEX idx_sales_stage ON sales_pipeline(stage)\n"
+    )
+
+    disambiguation = (
+        "Guidelines:\n"
+        f"- Always respond in language code '{lang}'.\n"
+        "- Do not invent columns/tables. Use only columns above; if unsure, ask a concise clarifying question.\n"
+        "- Map 'pending' warranty claims to status IN ('open','in_review').\n"
+        "- There is no towing flag; to detect tow-related cases, filter description via ILIKE '%tow%' OR '%towing%' OR '%tow truck%'.\n"
+        "- Prefer COUNT/aggregations and LIMIT for previews; include clear column aliases (e.g., AS num).\n"
+        "- Use the defined keys for joins: users.car_id -> car_catalog.id; warranty_claims.user_id -> users.id; warranty_claims.car_id -> car_catalog.id.\n"
+        "- Read-only SQL only.\n"
+    )
+
+    examples = (
+        "Examples:\n"
+        "- Count pending towing-related claims:\n"
+        "  SELECT COUNT(*) AS num_pending_tow\n"
+        "  FROM warranty_claims\n"
+        "  WHERE status IN ('open','in_review')\n"
+        "    AND (description ILIKE '%tow%' OR description ILIKE '%towing%' OR description ILIKE '%tow truck%');\n"
+        "- Open claims by make/year:\n"
+        "  SELECT cc.make, cc.year, COUNT(*) AS num\n"
+        "  FROM warranty_claims wc\n"
+        "  JOIN users u ON wc.user_id = u.id\n"
+        "  JOIN car_catalog cc ON u.car_id = cc.id\n"
+        "  WHERE wc.status = 'open'\n"
+        "  GROUP BY cc.make, cc.year\n"
+        "  ORDER BY num DESC;\n"
+    )
+
     instructions = (
-        f"You are an analyst assistant. Use the available tools to retrieve PDF context and query Postgres. "
-        f"Prefer COUNT/aggregations for totals; never mutate the DB. Always respond in language code '{lang}'."
+        "You are an analyst assistant. Use the available tools to retrieve PDF context and query Postgres.\n"
+        + db_schema + disambiguation + examples
     )
 
     agent = Agent(
