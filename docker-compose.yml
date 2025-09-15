@@ -1,0 +1,103 @@
+services:
+  postgres:
+    container_name: postgres
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: chatbot
+      POSTGRES_USER: chatbot
+      POSTGRES_PASSWORD: chatbot
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U chatbot -d chatbot"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  app:
+    container_name: app
+    build:
+      context: .
+      dockerfile: Dockerfile.app
+    image: chatbot-basic-app:local
+    working_dir: /app
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      DATABASE_URL: postgresql+psycopg://chatbot:chatbot@postgres:5432/chatbot
+      DOCS_DIR: /app/docs
+      DATA_DIR: /app/data
+      FRONTEND_DIR: /app/frontend
+      MCP_DOCS_URL: http://mcp-docs:3000
+      MCP_SQL_URL: http://mcp-sql:3000
+      UV_LINK_MODE: copy
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mcp-docs:
+        condition: service_healthy
+      mcp-sql:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-lc"]
+    command: ["uv run --python 3.13 python /app/main.py"]
+    ports:
+      - "8000:8000"
+
+  mcp-docs:
+    container_name: mcp-docs
+    build:
+      context: ./mcp/docs
+      dockerfile: Dockerfile
+    image: chatbot-basic-mcp-docs:local
+    working_dir: /srv
+    volumes:
+      - ./docs:/srv/corpus
+    environment:
+      CORPUS_DIR: /srv/corpus
+      UV_LINK_MODE: copy
+    entrypoint: ["/bin/sh", "-lc"]
+    command: ["uv run --python 3.13 python server.py"]
+    healthcheck:
+      test: ["CMD", "sh", "-lc", "wget -qO- http://localhost:3000 || nc -z localhost 3000"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    ports:
+      - "3001:3000"
+
+  mcp-sql:
+    container_name: mcp-sql
+    build:
+      context: ./mcp/sql
+      dockerfile: Dockerfile
+    image: chatbot-basic-mcp-sql:local
+    working_dir: /srv
+    environment:
+      DATABASE_URL: postgresql+psycopg://chatbot:chatbot@postgres:5432/chatbot
+      UV_LINK_MODE: copy
+    entrypoint: ["/bin/sh", "-lc"]
+    command: ["uv run --python 3.13 python server.py"]
+    healthcheck:
+      test: ["CMD", "sh", "-lc", "wget -qO- http://localhost:3000 || nc -z localhost 3000"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "3002:3000"
+
+  frontend:
+    container_name: frontend
+    image: nginx:alpine
+    volumes:
+      - ./frontend:/usr/share/nginx/html:ro
+    ports:
+      - "8080:80"
+
+volumes:
+  pgdata:
+
+

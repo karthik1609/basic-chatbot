@@ -1,0 +1,14 @@
+# Ignore local virtualenvs and caches
+.venv
+__pycache__
+*.pyc
+
+# Git metadata
+.git
+.gitignore
+
+# Local data and indexes
+data
+
+# OS files
+.DS_Store

@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>PDF RAG Chatbot</title>
+    <link rel="stylesheet" href="/styles.css?v=2" />
+  </head>
+  <body>
+    <div class="container">
+      <h1>PDF RAG Chatbot</h1>
+      <div class="controls">
+        <label>
+          Language:
+          <select id="language">
+            <option value="en" selected>English</option>
+            <option value="es">Español</option>
+            <option value="fr">Français</option>
+            <option value="de">Deutsch</option>
+            <option value="hi">हिन्दी</option>
+            <option value="ta">தமிழ்</option>
+            <option value="te">తెలుగు</option>
+            <option value="zh">中文</option>
+          </select>
+        </label>
+        <label>
+          Mode:
+          <select id="mode">
+            <option value="rag">RAG</option>
+            <option value="agent" selected>Agentic</option>
+          </select>
+        </label>
+        <button id="ingest">Rebuild Index</button>
+        <button id="dbinit">Init DB</button>
+        <button id="dbseed">Seed DB</button>
+      </div>
+
+      <div id="chat">
+        <div id="messages"></div>
+        <div class="input-row">
+          <input id="prompt" type="text" placeholder="Ask about the PDFs..." />
+          <button id="send">Send</button>
+        </div>
+      </div>
+    </div>
+
+    <script src="/main.js?v=2"></script>
+  </body>
+  </html>
+
+
