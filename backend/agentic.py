@@ -1,6 +1,6 @@
 import logging
 import os
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List, Tuple
 
 from openai import OpenAI
 from agents import Agent, Runner, function_tool
@@ -13,6 +13,32 @@ from .agent_tools import tool_retrieve_docs as _tool_retrieve_docs, tool_sql as 
 
 configure_logging()
 logger = logging.getLogger("agentic")
+
+# Simple in-process conversation memory keyed by session_id
+_SESSION_HISTORY: Dict[str, List[Tuple[str, str]]] = {}
+
+
+def _append_history(session_id: Optional[str], role: str, content: str) -> None:
+    if not session_id:
+        return
+    history = _SESSION_HISTORY.setdefault(session_id, [])
+    history.append((role, content))
+    # cap memory to last 20 turns
+    if len(history) > 40:
+        del history[: len(history) - 40]
+
+
+def _render_history(session_id: Optional[str], max_turns: int = 8) -> str:
+    if not session_id or session_id not in _SESSION_HISTORY:
+        return ""
+    history = _SESSION_HISTORY[session_id][-max_turns * 2 :]
+    if not history:
+        return ""
+    lines = ["Conversation so far (most recent first):"]
+    for role, content in reversed(history):
+        prefix = "User" if role == "user" else "Assistant"
+        lines.append(f"- {prefix}: {content}")
+    return "\n".join(lines)
 
 
 @function_tool
@@ -91,6 +117,8 @@ async def run_agentic_chat(message: str, language: str | None = None, session_id
         "- Prefer COUNT/aggregations and LIMIT for previews; include clear column aliases (e.g., AS num).\n"
         "- Use the defined keys for joins: users.car_id -> car_catalog.id; warranty_claims.user_id -> users.id; warranty_claims.car_id -> car_catalog.id.\n"
         "- Read-only SQL only.\n"
+        "- Please do not be verbose, just answer the question."
+        "- Be brief and to the point, but not terse or impolite."
     )
 
     examples = (
@@ -110,9 +138,12 @@ async def run_agentic_chat(message: str, language: str | None = None, session_id
         "  ORDER BY num DESC;\n"
     )
 
+    convo = _render_history(session_id)
+    convo_block = (convo + "\n\n") if convo else ""
+
     instructions = (
         "You are an analyst assistant. Use the available tools to retrieve PDF context and query Postgres.\n"
-        + db_schema + disambiguation + examples
+        + convo_block + db_schema + disambiguation + examples
     )
 
     agent = Agent(
@@ -121,14 +152,8 @@ async def run_agentic_chat(message: str, language: str | None = None, session_id
         tools=[retrieve_docs, sql],
     )
 
-    # Run with session if SDK supports it; otherwise fall back
-    try:
-        if session_id:
-            result = await Runner.run(agent, message, session=session_id)  # type: ignore[call-arg]
-        else:
-            result = await Runner.run(agent, message)
-    except TypeError:
-        result = await Runner.run(agent, message)
+    # Do not pass raw string as session (SDK expects a session object)
+    result = await Runner.run(agent, message)
 
     answer_text = getattr(result, "final_output", "") or ""
     tool_uses: list[dict[str, Any]] = []
@@ -143,6 +168,10 @@ async def run_agentic_chat(message: str, language: str | None = None, session_id
             ]
         except Exception:
             tool_uses = []
+
+    # Update simple memory
+    _append_history(session_id, "user", message)
+    _append_history(session_id, "assistant", answer_text)
 
     return {"answer": answer_text, "tools": tool_uses, "session_id": session_id}
 
