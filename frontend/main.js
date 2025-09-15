@@ -6,9 +6,21 @@ const languageEl = document.getElementById('language');
 const modeEl = document.getElementById('mode');
 const dbInitBtn = document.getElementById('dbinit');
 const dbSeedBtn = document.getElementById('dbseed');
+const newChatBtn = document.getElementById('newchat');
+const tracePre = document.getElementById('tracePre');
 
 // Point API calls to the FastAPI backend on port 8000
 const API_BASE = `${window.location.protocol}//${window.location.hostname}:8000`;
+
+// Persist session id for Agentic mode
+let sessionId = localStorage.getItem('session_id') || null;
+function resetSession() {
+  sessionId = crypto.randomUUID();
+  localStorage.setItem('session_id', sessionId);
+  messagesEl.innerHTML = '';
+  tracePre.textContent = '';
+}
+if (!sessionId) resetSession();
 
 function addMessage(text, who) {
   const wrapper = document.createElement('div');
@@ -27,26 +39,51 @@ function addContext(context) {
   messagesEl.appendChild(meta);
 }
 
+function appendTrace(obj) {
+  try {
+    const current = tracePre.textContent ? `${tracePre.textContent}\n` : '';
+    tracePre.textContent = `${current}${JSON.stringify(obj, null, 2)}`;
+    tracePre.scrollTop = tracePre.scrollHeight;
+  } catch {}
+}
+
 async function sendMessage() {
   const message = promptEl.value.trim();
   if (!message) return;
   addMessage(message, 'user');
   promptEl.value = '';
   try {
-    const endpoint = modeEl.value === 'agent' ? '/api/agent/chat' : '/api/chat';
-    const res = await fetch(`${API_BASE}${endpoint}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message, language: languageEl.value })
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(err.detail || `HTTP ${res.status}`);
+    if (modeEl.value === 'agent') {
+      const res = await fetch(`${API_BASE}/api/agent/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message, language: languageEl.value, session_id: sessionId })
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || `HTTP ${res.status}`);
+      }
+      const data = await res.json();
+      if (data.session_id) {
+        sessionId = data.session_id;
+        localStorage.setItem('session_id', sessionId);
+      }
+      addMessage(data.answer, 'bot');
+      if (data.tools) appendTrace({ tool_calls: data.tools });
+    } else {
+      const res = await fetch(`${API_BASE}/api/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message, language: languageEl.value })
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || `HTTP ${res.status}`);
+      }
+      const data = await res.json();
+      addMessage(data.answer, 'bot');
+      if (data.context) addContext(data.context);
     }
-    const data = await res.json();
-    addMessage(data.answer, 'bot');
-    if (data.context) addContext(data.context);
-    if (data.tools) addContext(data.tools.map(t => ({ metadata: { source: t.tool }, score: 1.0 })));
   } catch (e) {
     addMessage(`Error: ${e.message}`, 'bot');
   }
@@ -55,6 +92,11 @@ async function sendMessage() {
 sendBtn.addEventListener('click', sendMessage);
 promptEl.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') sendMessage();
+});
+
+newChatBtn.addEventListener('click', () => {
+  resetSession();
+  addMessage('Started a new chat session.', 'bot');
 });
 
 ingestBtn.addEventListener('click', async () => {

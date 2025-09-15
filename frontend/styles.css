@@ -2,13 +2,13 @@
 body { font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica, Arial, sans-serif; margin: 0; padding: 0; background: #0b1020; color: #e7e9ee; }
 .container { max-width: 900px; margin: 0 auto; padding: 24px; }
 h1 { font-size: 28px; margin: 0 0 16px; }
-.controls { display: flex; gap: 12px; align-items: center; margin-bottom: 16px; }
+.controls { display: flex; gap: 12px; align-items: center; margin-bottom: 16px; flex-wrap: wrap; }
 label { display: flex; gap: 8px; align-items: center; }
 select, input { background: #121833; color: #e7e9ee; border: 1px solid #2a3359; border-radius: 8px; padding: 10px 12px; }
 button { background: #3b82f6; color: white; border: none; border-radius: 8px; padding: 10px 14px; cursor: pointer; }
 button:hover { background: #2563eb; }
 
-#chat { background: #0f1731; border: 1px solid #1f2a4f; border-radius: 12px; padding: 16px; min-height: 480px; display: flex; flex-direction: column; gap: 12px; }
+#chat { background: #0f1731; border: 1px solid #1f2a4f; border-radius: 12px; padding: 16px; min-height: 360px; display: flex; flex-direction: column; gap: 12px; }
 #messages { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; padding-right: 8px; }
 .msg { padding: 12px; border-radius: 10px; max-width: 80%; white-space: pre-wrap; }
 .user { align-self: flex-end; background: #1b294f; }
@@ -16,4 +16,8 @@ button:hover { background: #2563eb; }
 .meta { font-size: 12px; opacity: 0.8; margin-top: 6px; }
 .input-row { display: flex; gap: 8px; }
 .input-row input { flex: 1; }
+
+#trace { margin-top: 16px; background: #0f1731; border: 1px solid #1f2a4f; border-radius: 12px; padding: 12px; }
+#trace h3 { margin: 0 0 8px; font-size: 14px; opacity: 0.9; }
+.trace-pre { background: #0c142b; border: 1px solid #1f2a4f; border-radius: 8px; padding: 12px; max-height: 220px; overflow: auto; }
 

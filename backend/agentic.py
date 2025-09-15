@@ -1,6 +1,6 @@
 import logging
 import os
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from openai import OpenAI
 from agents import Agent, Runner, function_tool
@@ -27,7 +27,7 @@ def sql(query: str) -> list[dict]:
     return _tool_sql(query=query)
 
 
-async def run_agentic_chat(message: str, language: str | None = None) -> Dict[str, Any]:
+async def run_agentic_chat(message: str, language: str | None = None, session_id: Optional[str] = None) -> Dict[str, Any]:
     # Ensure OpenAI client is configured (reads API key / base_url)
     _client: OpenAI = get_openai_client()
     lang = language or "en"
@@ -121,7 +121,14 @@ async def run_agentic_chat(message: str, language: str | None = None) -> Dict[st
         tools=[retrieve_docs, sql],
     )
 
-    result = await Runner.run(agent, message)
+    # Run with session if SDK supports it; otherwise fall back
+    try:
+        if session_id:
+            result = await Runner.run(agent, message, session=session_id)  # type: ignore[call-arg]
+        else:
+            result = await Runner.run(agent, message)
+    except TypeError:
+        result = await Runner.run(agent, message)
 
     answer_text = getattr(result, "final_output", "") or ""
     tool_uses: list[dict[str, Any]] = []
@@ -137,6 +144,6 @@ async def run_agentic_chat(message: str, language: str | None = None) -> Dict[st
         except Exception:
             tool_uses = []
 
-    return {"answer": answer_text, "tools": tool_uses}
+    return {"answer": answer_text, "tools": tool_uses, "session_id": session_id}
 
 

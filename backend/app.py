@@ -136,14 +136,16 @@ def create_app() -> FastAPI:
     class AgentChatRequest(BaseModel):
         message: str
         language: Optional[str] = None
+        session_id: Optional[str] = None
 
     class AgentChatResponse(BaseModel):
         answer: str
         tools: list[dict]
+        session_id: Optional[str] = None
 
     @app.post("/api/agent/chat", response_model=AgentChatResponse)
     async def agent_chat(req: AgentChatRequest) -> Any:  # noqa: ANN401
-        result = await run_agentic_chat(req.message, req.language)
+        result = await run_agentic_chat(req.message, req.language, req.session_id)
         return result
 
     # Mount static frontend last to avoid overshadowing API routes
