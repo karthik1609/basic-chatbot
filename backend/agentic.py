@@ -119,6 +119,8 @@ async def run_agentic_chat(message: str, language: str | None = None, session_id
         "- Read-only SQL only.\n"
         "- Please do not be verbose, just answer the question."
         "- Be brief and to the point, but not terse or impolite."
+        "- Do not answer questions that cannot be answered without using the tools."
+        "- Do not answer questions that are not appropriate to the warranty business."
     )
 
     examples = (
