@@ -47,20 +47,89 @@ def _read_pdfs_from_directory(directory_path: str) -> List[Tuple[str, str]]:
     return documents
 
 
-def _chunk_text(text: str, chunk_size: int = 1200, chunk_overlap: int = 200) -> List[str]:
+def _chunk_text(text: str, target_words: int = 320, overlap_sents: int = 2) -> List[Dict[str, Any]]:
+    """Chunk text using a heuristic semantic strategy.
+
+    - Detect headings (all-caps lines, short Title Case lines, numbered headings)
+    - Split into paragraphs and sentences, pack sentences up to target_words
+    - Maintain sentence-level overlap between adjacent chunks for continuity
+    - Return list of {text, section}
+    """
+    import re
+
     if not text:
         return []
-    words = text.split()
-    chunks: List[str] = []
-    start = 0
-    while start < len(words):
-        end = min(len(words), start + chunk_size)
-        chunk_words = words[start:end]
-        chunks.append(" ".join(chunk_words))
-        if end == len(words):
-            break
-        start = max(0, end - chunk_overlap)
-    return chunks
+
+    # Normalize newlines and trim whitespace
+    lines = [ln.strip() for ln in text.splitlines()]
+
+    def is_heading(line: str) -> bool:
+        if not line:
+            return False
+        if len(line) > 120:
+            return False
+        if re.match(r"^[0-9]+(\.[0-9]+)*\s+.+$", line):  # numbered heading
+            return True
+        if re.match(r"^[A-Z][A-Z\s\-:]{3,}$", line):  # ALL CAPS words
+            return True
+        # Title Case with few words
+        words = line.split()
+        if 1 <= len(words) <= 10 and all(w[:1].isupper() for w in words if w):
+            return True
+        return False
+
+    # Build sections
+    sections: List[Tuple[str, List[str]]] = []  # (section_title, lines)
+    current_title = ""
+    current_lines: List[str] = []
+    for ln in lines:
+        if is_heading(ln):
+            if current_lines:
+                sections.append((current_title, current_lines))
+                current_lines = []
+            current_title = ln
+        else:
+            current_lines.append(ln)
+    if current_lines:
+        sections.append((current_title, current_lines))
+
+    # Sentence splitter (simple)
+    sent_split = re.compile(r"(?<=[\.!?])\s+")
+
+    chunks_out: List[Dict[str, Any]] = []
+    for title, sec_lines in sections:
+        paragraph = "\n".join([ln for ln in sec_lines if ln])
+        # Split paragraphs by blank lines, then sentences
+        paragraphs = [p.strip() for p in re.split(r"\n\s*\n", paragraph) if p.strip()]
+        sents: List[str] = []
+        for p in paragraphs:
+            sents.extend([s.strip() for s in sent_split.split(p) if s.strip()])
+        if not sents:
+            continue
+
+        # Pack sentences into chunks by target word count
+        idx = 0
+        prev_tail: List[str] = []
+        while idx < len(sents):
+            cur_sents: List[str] = []
+            # include overlap from previous chunk
+            if prev_tail:
+                cur_sents.extend(prev_tail)
+            words_count = sum(len(s.split()) for s in cur_sents)
+            while idx < len(sents) and words_count < target_words:
+                cur_sents.append(sents[idx])
+                words_count += len(sents[idx].split())
+                idx += 1
+            # compute next overlap tail
+            if overlap_sents > 0:
+                prev_tail = cur_sents[-overlap_sents:] if len(cur_sents) >= overlap_sents else cur_sents[:]
+            else:
+                prev_tail = []
+            chunk_text = " ".join(cur_sents).strip()
+            if chunk_text:
+                chunks_out.append({"text": chunk_text, "section": title})
+
+    return chunks_out
 
 
 def _embed_texts(texts: List[str]) -> np.ndarray:
@@ -85,12 +154,14 @@ def build_or_update_index() -> Dict[str, Any]:
     chunk_metadata: List[Dict[str, Any]] = []
 
     for filename, content in docs:
+        # semantic-recursive chunks
         chunks = _chunk_text(content)
         for idx, chunk in enumerate(chunks):
-            all_chunks.append(chunk)
+            all_chunks.append(chunk["text"])
             chunk_metadata.append({
                 "source": filename,
                 "chunk_index": idx,
+                "section": chunk.get("section") or "",
             })
 
     logger.info("Chunking complete", extra={"num_chunks": len(all_chunks)})

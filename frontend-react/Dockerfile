@@ -1,6 +1,8 @@
 FROM node:20-alpine AS build
 WORKDIR /app
 ENV NEXT_TELEMETRY_DISABLED=1
+ARG NEXT_PUBLIC_FASTAPI_EXTERNAL_BASE=http://localhost:8000
+ENV NEXT_PUBLIC_FASTAPI_EXTERNAL_BASE=${NEXT_PUBLIC_FASTAPI_EXTERNAL_BASE}
 
 COPY package*.json ./
 RUN npm ci --no-audit --no-fund
@@ -13,6 +15,7 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV PORT=3000
+ENV NEXT_PUBLIC_FASTAPI_EXTERNAL_BASE=${NEXT_PUBLIC_FASTAPI_EXTERNAL_BASE}
 
 # Copy built app and runtime deps
 COPY --from=build /app/node_modules ./node_modules
