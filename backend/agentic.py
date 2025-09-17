@@ -171,6 +171,9 @@ async def _run_agentic_chat_inner(message: str, language: str | None = None, ses
 
     trace: List[Dict[str, Any]] = []
     citations: List[Dict[str, Any]] = []
+    decision: str = "PROCEED"
+    assumptions: List[str] = []
+    confidence: float = 0.0
 
     # 1) Input Normalizer
     normalizer_instr = (
@@ -228,10 +231,21 @@ async def _run_agentic_chat_inner(message: str, language: str | None = None, ses
             "- Avoid yes/no unless appropriate. Return only the question."
         )
         ask_question = await _run_text_agent("Elicitation", ask_instr, normalized)
+        decision = "ASK"
         trace.append({"stage": "ask", "question": ask_question})
         # Memory update and return early awaiting user reply
         _append_history(session_id, "user", message)
-        return {"ask": ask_question, "trace": trace, "citations": citations, "tools": [], "session_id": session_id, "answer": ""}
+        return {
+            "ask": ask_question,
+            "trace": trace,
+            "citations": citations,
+            "tools": [],
+            "session_id": session_id,
+            "answer": "",
+            "decision": decision,
+            "assumptions": assumptions,
+            "confidence": confidence,
+        }
 
     # 4) Retrieval / Tools
     docs_evidence: List[Dict[str, Any]] = []
@@ -251,6 +265,13 @@ async def _run_agentic_chat_inner(message: str, language: str | None = None, ses
             citations.append(citation)
             snippet = (item.get("text") or "")[:600]
             docs_evidence.append({"tag": citation["tag"], "snippet": snippet})
+        # crude confidence from doc scores
+        if docs_results:
+            try:
+                scores = [float(item.get("score") or 0.0) for item in docs_results]
+                confidence = max(confidence, sum(scores) / max(1, len(scores)))
+            except Exception:
+                pass
         trace.append({"stage": "retrieve_docs", "num": len(docs_results)})
 
     if requires_sql:
@@ -317,6 +338,15 @@ async def _run_agentic_chat_inner(message: str, language: str | None = None, ses
     _append_history(session_id, "user", message)
     _append_history(session_id, "assistant", answer_text)
 
-    return {"answer": answer_text, "tools": [], "session_id": session_id, "trace": trace, "citations": citations}
+    return {
+        "answer": answer_text,
+        "tools": [],
+        "session_id": session_id,
+        "trace": trace,
+        "citations": citations,
+        "decision": decision,
+        "assumptions": assumptions,
+        "confidence": confidence,
+    }
 
 

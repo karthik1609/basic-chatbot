@@ -91,11 +91,20 @@ services:
 
   frontend:
     container_name: frontend
-    image: nginx:alpine
-    volumes:
-      - ./frontend:/usr/share/nginx/html:ro
+    build:
+      context: ./frontend-react
+      dockerfile: Dockerfile
+    image: chatbot-basic-frontend:local
+    environment:
+      NEXT_PUBLIC_FASTAPI_BASE: http://app:8000
+      NEXT_PUBLIC_SCHEME: http
+      NEXT_PUBLIC_HOST: app
+      NEXT_PUBLIC_PORT: "8000"
+    depends_on:
+      app:
+        condition: service_started
     ports:
-      - "8080:80"
+      - "3000:3000"
 
 volumes:
   pgdata:
