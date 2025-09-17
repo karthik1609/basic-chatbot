@@ -4,6 +4,9 @@ from typing import Any, Dict, Optional, List, Tuple
 
 from openai import OpenAI
 from agents import Agent, Runner, function_tool
+import json
+from typing import List
+import asyncio
 
 from .logging_setup import configure_logging
 from .openai_client import get_openai_client
@@ -16,6 +19,7 @@ logger = logging.getLogger("agentic")
 
 # Simple in-process conversation memory keyed by session_id
 _SESSION_HISTORY: Dict[str, List[Tuple[str, str]]] = {}
+_SESSION_LOCKS: Dict[str, asyncio.Lock] = {}
 
 
 def _append_history(session_id: Optional[str], role: str, content: str) -> None:
@@ -54,6 +58,18 @@ def sql(query: str) -> list[dict]:
 
 
 async def run_agentic_chat(message: str, language: str | None = None, session_id: Optional[str] = None) -> Dict[str, Any]:
+    # Per-session gating to avoid overlapping turns
+    lock: Optional[asyncio.Lock] = None
+    if session_id:
+        lock = _SESSION_LOCKS.setdefault(session_id, asyncio.Lock())
+    if lock is not None:
+        async with lock:
+            return await _run_agentic_chat_inner(message, language, session_id)
+    else:
+        return await _run_agentic_chat_inner(message, language, session_id)
+
+
+async def _run_agentic_chat_inner(message: str, language: str | None = None, session_id: Optional[str] = None) -> Dict[str, Any]:
     # Ensure OpenAI client is configured (reads API key / base_url)
     _client: OpenAI = get_openai_client()
     lang = language or "en"
@@ -117,10 +133,9 @@ async def run_agentic_chat(message: str, language: str | None = None, session_id
         "- Prefer COUNT/aggregations and LIMIT for previews; include clear column aliases (e.g., AS num).\n"
         "- Use the defined keys for joins: users.car_id -> car_catalog.id; warranty_claims.user_id -> users.id; warranty_claims.car_id -> car_catalog.id.\n"
         "- Read-only SQL only.\n"
-        "- Please do not be verbose, just answer the question."
-        "- Be brief and to the point, but not terse or impolite."
-        "- Do not answer questions that cannot be answered without using the tools."
-        "- Do not answer questions that are not appropriate to the warranty business."
+        "- Please be concise and direct, but not impolite.\n"
+        "- Do not answer questions that cannot be answered without using the tools.\n"
+        "- Do not answer questions that are not appropriate to the warranty business.\n"
     )
 
     examples = (
@@ -148,33 +163,160 @@ async def run_agentic_chat(message: str, language: str | None = None, session_id
         + convo_block + db_schema + disambiguation + examples
     )
 
-    agent = Agent(
-        name="Analyst",
-        instructions=instructions,
-        tools=[retrieve_docs, sql],
+    # ---- Mini-agent runner for text-only steps ----
+    async def _run_text_agent(name: str, instr: str, user_msg: str) -> str:
+        mini = Agent(name=name, instructions=instr, tools=[])
+        res = await Runner.run(mini, user_msg)
+        return getattr(res, "final_output", "") or ""
+
+    trace: List[Dict[str, Any]] = []
+    citations: List[Dict[str, Any]] = []
+
+    # 1) Input Normalizer
+    normalizer_instr = (
+        f"Respond in language code '{lang}'. You normalize user input.\n"
+        "- Fix obvious typos and normalize numbers, dates, and units.\n"
+        "- Remove irrelevant fluff.\n"
+        "- Mask PII: replace emails, phones with placeholders.\n"
+        "Return only the cleaned text."
     )
+    normalized = await _run_text_agent("InputNormalizer", normalizer_instr, message)
+    trace.append({"stage": "normalize", "normalized": normalized})
 
-    # Do not pass raw string as session (SDK expects a session object)
-    result = await Runner.run(agent, message)
+    # 2) Intent & Slot Extractor
+    extractor_instr = (
+        f"Respond in language code '{lang}'. Extract task intent and slots as compact JSON.\n"
+        "- intents: one of ['policy_question','sql_analytics','doc_lookup','small_talk','other']\n"
+        "- slots: key/value pairs relevant to the task\n"
+        "- missing_slots: critical slots not provided\n"
+        "- requires_docs: boolean\n"
+        "- requires_sql: boolean\n"
+        "Return JSON only."
+    )
+    extracted_raw = await _run_text_agent("IntentExtractor", extractor_instr, normalized)
+    intent = "other"
+    slots: Dict[str, Any] = {}
+    missing_slots: List[str] = []
+    requires_docs = False
+    requires_sql = False
+    try:
+        j = json.loads(extracted_raw)
+        intent = j.get("intent", intent)
+        slots = j.get("slots", {}) or {}
+        missing_slots = list(j.get("missing_slots", []) or [])
+        requires_docs = bool(j.get("requires_docs", False))
+        requires_sql = bool(j.get("requires_sql", False))
+    except Exception:
+        pass
+    trace.append({
+        "stage": "extract",
+        "intent": intent,
+        "slots": slots,
+        "missing_slots": missing_slots,
+        "requires_docs": requires_docs,
+        "requires_sql": requires_sql,
+    })
 
-    answer_text = getattr(result, "final_output", "") or ""
-    tool_uses: list[dict[str, Any]] = []
-    if hasattr(result, "tool_calls") and isinstance(result.tool_calls, list):
-        try:
-            tool_uses = [
-                {
-                    "name": getattr(tc, "name", None),
-                    "args": getattr(tc, "arguments", None),
-                }
-                for tc in result.tool_calls  # type: ignore[attr-defined]
-            ]
-        except Exception:
-            tool_uses = []
+    # 3) Uncertainty & Decision Policy
+    must_ask = len(missing_slots) > 0
+    ask_question = None
+    if must_ask:
+        ask_instr = (
+            f"Respond in language code '{lang}'. You generate one concise elicitation question to collect: {missing_slots}.\n"
+            "- Batch into one question.\n"
+            "- Offer options if suitable.\n"
+            "- Avoid yes/no unless appropriate. Return only the question."
+        )
+        ask_question = await _run_text_agent("Elicitation", ask_instr, normalized)
+        trace.append({"stage": "ask", "question": ask_question})
+        # Memory update and return early awaiting user reply
+        _append_history(session_id, "user", message)
+        return {"ask": ask_question, "trace": trace, "citations": citations, "tools": [], "session_id": session_id, "answer": ""}
 
-    # Update simple memory
+    # 4) Retrieval / Tools
+    docs_evidence: List[Dict[str, Any]] = []
+    sql_rows: List[Dict[str, Any]] = []
+    sql_query: Optional[str] = None
+
+    if requires_docs:
+        docs_results = _tool_retrieve_docs(query=normalized, top_k=6)
+        for idx, item in enumerate(docs_results, start=1):
+            citation = {
+                "type": "doc",
+                "tag": f"D{idx}",
+                "source": item.get("metadata", {}).get("source"),
+                "chunk_index": item.get("metadata", {}).get("chunk_index"),
+                "score": item.get("score"),
+            }
+            citations.append(citation)
+            snippet = (item.get("text") or "")[:600]
+            docs_evidence.append({"tag": citation["tag"], "snippet": snippet})
+        trace.append({"stage": "retrieve_docs", "num": len(docs_results)})
+
+    if requires_sql:
+        sql_gen_instr = (
+            f"Respond in language code '{lang}'. Generate a single read-only SQL query for Postgres given the task, slots, and schema.\n"
+            "Constraints:\n"
+            "- Use only columns/tables in the provided schema.\n"
+            "- Map 'pending' to status IN ('open','in_review').\n"
+            "- For tow-related, filter description ILIKE '%tow%' OR '%towing%' OR '%tow truck%'.\n"
+            "- Prefer COUNT/aggregations where appropriate.\n"
+            "- Return only raw SQL, without code fences, backticks, or commentary."
+        )
+        sql_prompt = (
+            "Task intent: " + intent + "\n" +
+            "Slots: " + json.dumps(slots, ensure_ascii=False) + "\n" +
+            "Schema:\n" + db_schema
+        )
+        sql_query = await _run_text_agent("SQLGenerator", sql_gen_instr, sql_prompt)
+        # Execute
+        sql_rows = _tool_sql(query=sql_query)
+        citations.append({"type": "sql", "tag": "S1", "query": sql_query, "rows": len(sql_rows)})
+        trace.append({"stage": "sql", "query": sql_query, "rows": len(sql_rows)})
+
+    # 5) Draft Answer Composer
+    composer_instr = (
+        f"Respond in language code '{lang}'. Compose a concise answer.\n"
+        "- Use provided evidence.\n"
+        "- Include inline citations like [D1], [S1] where used.\n"
+        "- Also produce a short reasoning outline (3-5 bullets).\n"
+        "Return as JSON with keys: answer, reasoning_bullets (array)."
+    )
+    evidence_block_lines: List[str] = []
+    for d in docs_evidence:
+        evidence_block_lines.append(f"[{d['tag']}] {d['snippet']}")
+    if sql_rows:
+        preview = sql_rows[:5]
+        evidence_block_lines.append(f"[S1] SQL preview: {json.dumps(preview, ensure_ascii=False)[:800]}")
+    evidence_block = "\n\n".join(evidence_block_lines)
+    compose_input = (
+        "Normalized question: " + normalized + "\n\n" +
+        "Slots: " + json.dumps(slots, ensure_ascii=False) + "\n\n" +
+        ("Evidence:\n" + evidence_block if evidence_block else "")
+    )
+    composed_raw = await _run_text_agent("Composer", composer_instr, compose_input)
+    answer_text = composed_raw
+    reasoning_bullets: List[str] = []
+    try:
+        j = json.loads(composed_raw)
+        answer_text = j.get("answer", answer_text)
+        reasoning_bullets = list(j.get("reasoning_bullets", []) or [])
+    except Exception:
+        pass
+    trace.append({"stage": "compose", "reasoning": reasoning_bullets})
+
+    # 6) Validator/Guardrails (lightweight)
+    # Basic heuristic: ensure we didn't answer without any evidence when docs/sql were required
+    if (requires_docs or requires_sql) and not citations:
+        answer_text = "I'm not fully confident without evidence. Could you rephrase or provide more details?"
+        trace.append({"stage": "validate", "status": "low_evidence"})
+    else:
+        trace.append({"stage": "validate", "status": "ok"})
+
+    # Update memory and return
     _append_history(session_id, "user", message)
     _append_history(session_id, "assistant", answer_text)
 
-    return {"answer": answer_text, "tools": tool_uses, "session_id": session_id}
+    return {"answer": answer_text, "tools": [], "session_id": session_id, "trace": trace, "citations": citations}
 
 

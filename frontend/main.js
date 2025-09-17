@@ -58,7 +58,22 @@ document.addEventListener('DOMContentLoaded', () => {
     } catch {}
   }
 
+  function addCitations(citations) {
+    if (!citations || citations.length === 0 || !messagesEl) return;
+    const meta = document.createElement('div');
+    meta.className = 'meta';
+    const lines = citations.map(c => {
+      if (c.type === 'doc') return `[${c.tag}] ${c.source}#${c.chunk_index} (score=${(c.score||0).toFixed(3)})`;
+      if (c.type === 'sql') return `[${c.tag}] SQL rows=${c.rows}`;
+      return JSON.stringify(c);
+    }).join('\n');
+    meta.textContent = `Citations:\n${lines}`;
+    messagesEl.appendChild(meta);
+  }
+
   async function sendMessage() {
+    if (sendBtn) sendBtn.disabled = true;
+    if (promptEl) promptEl.disabled = true;
     const message = (promptEl && promptEl.value || '').trim();
     if (!message) return;
     addMessage(message, 'user');
@@ -79,8 +94,15 @@ document.addEventListener('DOMContentLoaded', () => {
           sessionId = data.session_id;
           localStorage.setItem('session_id', sessionId);
         }
-        addMessage(data.answer, 'bot');
-        if (data.tools) appendTrace({ tool_calls: data.tools });
+        if (data.ask) {
+          addMessage(data.ask, 'bot');
+          appendTrace({ stage: 'ask', question: data.ask });
+        } else {
+          addMessage(data.answer, 'bot');
+          if (data.citations) addCitations(data.citations);
+          if (data.trace) appendTrace({ trace: data.trace });
+          if (data.tools) appendTrace({ tool_calls: data.tools });
+        }
       } else {
         const res = await fetch(`${API_BASE}/api/chat`, {
           method: 'POST',
@@ -98,6 +120,10 @@ document.addEventListener('DOMContentLoaded', () => {
     } catch (e) {
       addMessage(`Error: ${e.message}`, 'bot');
       console.error(e);
+    } finally {
+      if (sendBtn) sendBtn.disabled = false;
+      if (promptEl) promptEl.disabled = false;
+      if (promptEl) promptEl.focus();
     }
   }
 

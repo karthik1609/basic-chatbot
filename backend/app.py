@@ -142,6 +142,9 @@ def create_app() -> FastAPI:
         answer: str
         tools: list[dict]
         session_id: Optional[str] = None
+        trace: Optional[list[dict]] = None
+        citations: Optional[list[dict]] = None
+        ask: Optional[str] = None
 
     @app.post("/api/agent/chat", response_model=AgentChatResponse)
     async def agent_chat(req: AgentChatRequest) -> Any:  # noqa: ANN401
