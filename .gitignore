@@ -15,6 +15,9 @@ downloads/
 eggs/
 .eggs/
 lib/
+# Unignore React app's lib directory so UI utilities are tracked
+!frontend-react/lib/
+!frontend-react/lib/**
 lib64/
 parts/
 sdist/
