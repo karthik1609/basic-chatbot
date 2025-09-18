@@ -431,7 +431,7 @@ async def _run_agentic_chat_inner(message: str, language: str | None = None, ses
                         "source": c.get("source"),
                         "chunk_index": c.get("chunk_index"),
                         "score": c.get("score"),
-                        "text": text_full[:800],
+                        "text": text_full,  # keep full chunk text for tooltip display
                         "point": point_label,
                     })
                     docs_evidence.append({"tag": c["tag"], "snippet": snippet, "point": point_label})
@@ -503,8 +503,8 @@ async def _run_agentic_chat_inner(message: str, language: str | None = None, ses
     # 5) Draft Answer Composer
     composer_instr = (
         f"Respond in language code '{lang}'. Compose a concise answer.\n"
-        "- Use provided evidence.\n"
-        "- Include inline citations like [D1], [S1] where used.\n"
+        "- Use only the provided evidence.\n"
+        "- Enforce one inline citation per atomic claim sentence: use [D#] and/or [S#].\n"
         "- Prefer Markdown formatting; use Markdown tables for tabular data.\n"
         "- Also produce a short reasoning outline (3-5 bullets).\n"
         "Return as JSON with keys: answer, reasoning_bullets (array)."
@@ -531,6 +531,80 @@ async def _run_agentic_chat_inner(message: str, language: str | None = None, ses
     except Exception:
         pass
     trace.append({"stage": "compose", "reasoning": reasoning_bullets})
+
+    # 5.5) Nitpicker Verifier (multi-pass, recursive)
+    async def _run_nitpicker(
+        question: str,
+        draft_answer: str,
+        doc_citations: List[Dict[str, Any]],
+        sql_query_text: Optional[str],
+    ) -> Dict[str, Any]:
+        """Run a verifier that checks claim attribution, entailment, coverage, consistency, and citation hygiene.
+        Returns JSON with keys: compliance_score (0-100), findings (list), patches (list of edit instructions),
+        revised_answer (optional string)."""
+        # Build compact evidence map for the verifier
+        docs_map_lines: List[str] = []
+        for c in doc_citations:
+            tag = c.get("tag")
+            src = c.get("source")
+            idx = c.get("chunk_index")
+            txt = (c.get("text") or "")
+            docs_map_lines.append(f"[{tag}] {src}#{idx}\n{txt}")
+        docs_block = "\n\n".join(docs_map_lines)
+
+        sql_block = sql_query_text or ""
+
+        nitpicker_instr = (
+            f"Respond in language code '{lang}'. You are Nitpicker, a deterministic verifier (temperature 0).\n"
+            "Run multi-pass checks on the draft answer against the provided evidence only.\n"
+            "Pass A — Claim extraction & attribution: split into atomic claims; each must have one citation [D#]/[S#].\n"
+            "Pass B — Entailment: for each (claim, cited-span), judge entailed/contradicted/unknown.\n"
+            "Pass C — Coverage: decompose the user question into sub-questions; mark omitted sub-answers.\n"
+            "Pass D — Consistency: sample alternative phrasings to detect divergences (logic-level).\n"
+            "Pass E — Citation hygiene: penalize broad/irrelevant citations; reward tight spans.\n"
+            "Scoring (0–100): heavy weight on faithfulness/entailment.\n"
+            "If score < 90, propose minimal patches and optionally provide a fully revised answer constrained to cited spans.\n"
+            "Return strict JSON with keys: {\"compliance_score\": number, \"findings\": array, \"patches\": array, \"revised_answer\": string|null}."
+        )
+        nitpicker_input = (
+            "User question:\n" + question + "\n\n" +
+            "Draft answer (Markdown with [Dx]/[Sx] citations):\n" + draft_answer + "\n\n" +
+            "Doc evidence (by tag):\n" + docs_block + "\n\n" +
+            ("SQL query [S1]:\n" + sql_block if sql_block else "")
+        )
+        raw = await _run_text_agent("Nitpicker", nitpicker_instr, nitpicker_input)
+        try:
+            return json.loads(raw)
+        except Exception:
+            return {"compliance_score": 0, "findings": [], "patches": [], "revised_answer": None}
+
+    # Recursive verification up to 3 rounds or threshold
+    nitpicker_rounds: List[Dict[str, Any]] = []
+    threshold = 90
+    for round_idx in range(1, 4):
+        ver = await _run_nitpicker(normalized, answer_text, [c for c in citations if c.get("type") == "doc"], sql_query)
+        score = float(ver.get("compliance_score") or 0)
+        nitpicker_rounds.append({"round": round_idx, "score": score, "findings": ver.get("findings", [])})
+        if score >= threshold:
+            break
+        revised = ver.get("revised_answer")
+        patches = ver.get("patches")
+        # If a revised answer is provided, prefer it; else, re-compose with constraints
+        if isinstance(revised, str) and revised.strip():
+            answer_text = revised
+        else:
+            # Constrain the composer with targeted edits
+            patch_text = json.dumps(patches, ensure_ascii=False)
+            constrained_instr = composer_instr + "\n\nApply these targeted patches and corrections strictly, do not introduce new claims without citations. Patches: " + patch_text
+            recomposed_raw = await _run_text_agent("Composer", constrained_instr, compose_input)
+            try:
+                j2 = json.loads(recomposed_raw)
+                answer_text = j2.get("answer", recomposed_raw)
+            except Exception:
+                answer_text = recomposed_raw
+
+    if nitpicker_rounds:
+        trace.append({"stage": "nitpicker", "rounds": nitpicker_rounds})
 
     # 6) Validator/Guardrails (lightweight)
     # Basic heuristic: ensure we didn't answer without any evidence when docs/sql were required

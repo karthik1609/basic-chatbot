@@ -9,8 +9,9 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Toaster } from '@/components/ui/sonner';
 import { toast } from 'sonner';
 
-type Msg = { id: string; role: 'user'|'assistant'; content: string };
-type Citation = { type: 'doc'|'sql'; tag: string; source?: string; chunk_index?: number; score?: number; rows?: number; query?: string; text?: string };
+export type Citation = { type: 'doc'|'sql'; tag: string; source?: string; chunk_index?: number; score?: number; rows?: number; query?: string; text?: string };
+
+type Msg = { id: string; role: 'user'|'assistant'; content: string; citations?: Citation[] };
 type TraceEntry = Record<string, unknown>;
 
 export default function ChatPage() {
@@ -18,7 +19,6 @@ export default function ChatPage() {
   const [messages, setMessages] = useState<Msg[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
-  const [citations, setCitations] = useState<Citation[]>([]);
   const [trace, setTrace] = useState<TraceEntry[] | null>(null);
   const [decision, setDecision] = useState<string>('');
   const [assumptions, setAssumptions] = useState<string[]>([]);
@@ -52,8 +52,8 @@ export default function ChatPage() {
         setSessionId(data.session_id);
       }
       const text = data.ask ? data.ask : (data.answer || '');
-      setMessages(prev => [...prev, { id: crypto.randomUUID(), role: 'assistant', content: text }]);
-      setCitations(data.citations || []);
+      const msg: Msg = { id: crypto.randomUUID(), role: 'assistant', content: text, citations: (data.citations || []) as Citation[] };
+      setMessages(prev => [...prev, msg]);
       setTrace(data.trace || null);
       setDecision(data.decision || '');
       setAssumptions(data.assumptions || []);
@@ -71,7 +71,6 @@ export default function ChatPage() {
     window.localStorage.setItem('session_id', sid);
     setSessionId(sid);
     setMessages([]);
-    setCitations([]);
     setTrace(null);
     setDecision('');
     setAssumptions([]);
@@ -109,7 +108,7 @@ export default function ChatPage() {
               <div className={`max-w-[85%] rounded-xl px-3 py-2 ${m.role === 'user' ? 'bg-primary/15 border border-primary/30' : 'bg-secondary/20 border border-secondary/30'}`}>
                 <div className="text-xs opacity-60 mb-1">{m.role === 'user' ? 'You' : 'Assistant'}</div>
                 <div className="prose prose-invert max-w-none">
-                  <Markdown citations={citations as unknown as { tag: string; text?: string; query?: string }[]}>{m.content}</Markdown>
+                  <Markdown citations={(m.citations || []).map(c => ({ tag: c.tag, text: c.text, query: c.query }))}>{m.content}</Markdown>
                 </div>
               </div>
             </div>
@@ -138,26 +137,6 @@ export default function ChatPage() {
         </form>
       </Card>
       <div className="space-y-4">
-        <Card className="p-4">
-          <div className="font-medium mb-2">Citations</div>
-          <div className="space-y-3 text-sm">
-            {citations && citations.length ? citations.map((c, i) => (
-              <div key={i} className="border border-border/50 rounded-md p-2">
-                {c.type === 'doc' ? (
-                  <div>
-                    <div className="text-xs opacity-70 mb-1">[{c.tag}] {c.source}#{c.chunk_index} (score={(c.score||0).toFixed?.(3) ?? c.score})</div>
-                    <blockquote className="border-l-2 pl-2 text-muted-foreground whitespace-pre-wrap">{c.text || '...'}</blockquote>
-                  </div>
-                ) : (
-                  <div>
-                    <div className="text-xs opacity-70 mb-1">[{c.tag}] SQL</div>
-                    <pre className="text-xs overflow-auto"><code>{c.query || ''}</code></pre>
-                  </div>
-                )}
-              </div>
-            )) : <div className="text-sm opacity-70">No citations</div>}
-          </div>
-        </Card>
         <Card className="p-4">
           <div className="font-medium mb-2">Reasoning Trace</div>
           {decisionLine ? <div className="text-xs mb-2 whitespace-pre-wrap">{decisionLine}</div> : null}

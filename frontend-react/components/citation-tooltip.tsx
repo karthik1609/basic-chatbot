@@ -18,7 +18,7 @@ export function CitationTooltip({ label, content }: Props) {
       {open && (
         <span
           role="tooltip"
-          className="absolute left-0 top-full mt-1 z-50 bg-popover text-popover-foreground text-xs p-2 rounded border border-border max-w-sm whitespace-pre-wrap shadow"
+          className="absolute left-0 top-full mt-1 z-50 bg-popover text-popover-foreground text-xs p-2 rounded border border-border max-w-lg max-h-72 whitespace-pre-wrap shadow overflow-auto"
         >
           {content}
         </span>
