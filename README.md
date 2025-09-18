@@ -129,44 +129,6 @@ C4Context
     Rel(backend, storage, "Ingest/Retrieve chunks")
 ```
 
-#### C4 Level 2 — Container
-
-```mermaid
-C4Container
-    title Containers
-    Person(user, "End User")
-    System_Boundary(prod, "Docker Compose") {
-      Container(ui, "frontend-react", "Next.js 15", "Chat UI, tooltips, actions")
-      Container(api, "app", "FastAPI", "Agent orchestration, RAG, SQL")
-      ContainerDb(db, "postgres", "PostgreSQL", "Claims & users data")
-      Container(store, "faiss-store", "Filesystem", "PDF chunks + embeddings")
-    }
-    System_Ext(openai, "OpenAI API")
-
-    Rel(user, ui, "HTTPS")
-    Rel(ui, api, "HTTP JSON")
-    Rel(api, db, "psycopg/SQLAlchemy")
-    Rel(api, store, "FAISS IO")
-    Rel(api, openai, "Responses + Embeddings")
-```
-
-#### C4 Level 3 — Components (Backend)
-
-```mermaid
-C4Component
-    title FastAPI Backend Components
-    Container(api, "FastAPI")
-    Component(app, "app.py", "API routes: ingest, db, agent/chat")
-    Component(agentic, "agentic.py", "Agent pipeline + tools + verifier")
-    Component(tools, "agent_tools.py", "retrieve_docs, sql")
-    Component(rag, "rag.py", "Chunking, embeddings, FAISS")
-    Component(db, "db.py", "Schema + seed")
-
-    Rel(app, agentic, "run_agentic_chat()")
-    Rel(agentic, tools, "tool calls")
-    Rel(agentic, rag, "ingest/retrieve")
-    Rel(agentic, db, "SQL via tools")
-```
 
 #### C4 Level 4 — Code-Level (Agent Stages)
 
