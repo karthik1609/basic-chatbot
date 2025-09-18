@@ -221,6 +221,3 @@ sequenceDiagram
 
 ---
 
-### License
-
-MIT
