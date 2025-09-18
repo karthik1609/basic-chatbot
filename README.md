@@ -178,10 +178,10 @@ flowchart TD
     C -- PROCEED --> E[Context Integrator]
     E --> F[Retrieval: Docs]
     E --> G[Tool: SQL]
-    F --> H[Composer (Markdown, per-claim citations)]
-    G --> H[Composer (Markdown, per-claim citations)]
-    H --> I[Nitpicker Verifier (multi-pass, recursive)]
-    I -->|score ≥ 90| J[Finalizer]
+    F --> H["Composer: Markdown, per-claim citations"]
+    G --> H["Composer: Markdown, per-claim citations"]
+    H --> I["Nitpicker Verifier: multi-pass, recursive"]
+    I -->|score >= 90| J[Finalizer]
     I -->|score < 90| H
 ```
 
