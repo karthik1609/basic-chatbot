@@ -12,3 +12,9 @@ data
 
 # OS files
 .DS_Store
+
+
+frontend-react/node_modules
+frontend-react/.next
+frontend-react/out
+frontend-react/.vercel

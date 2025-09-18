@@ -1,0 +1,9 @@
+# frontend-react/.dockerignore
+node_modules
+.next
+.git
+out
+*.log
+.DS_Store
+coverage
+dist
