@@ -178,10 +178,11 @@ flowchart TD
     C -- PROCEED --> E[Context Integrator]
     E --> F[Retrieval: Docs]
     E --> G[Tool: SQL]
-    F & G --> H[Composer (Markdown, per-claim citations)]
+    F --> H[Composer (Markdown, per-claim citations)]
+    G --> H[Composer (Markdown, per-claim citations)]
     H --> I[Nitpicker Verifier (multi-pass, recursive)]
-    I -->|score>=90| J[Finalizer]
-    I -->|score<90| H
+    I -->|score ≥ 90| J[Finalizer]
+    I -->|score < 90| H
 ```
 
 #### Sequence — Typical doc+SQL turn
