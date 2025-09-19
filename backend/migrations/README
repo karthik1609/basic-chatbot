@@ -1,0 +1,7 @@
+Database migrations live here. Use alembic to create and upgrade revisions.
+
+Examples:
+- Create initial revision: alembic revision -m "init"
+- Autogenerate (if using models in future): alembic revision --autogenerate -m "change"
+- Upgrade to head: alembic upgrade head
+- Downgrade: alembic downgrade -1

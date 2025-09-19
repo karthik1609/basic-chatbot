@@ -256,6 +256,13 @@ def init_schema(engine: Optional[Engine] = None) -> None:
         logger.info("Schema ensured")
 
 
+def alembic_revision_message() -> str:
+    """Return a human-readable message describing current schema for Alembic revisions."""
+    return (
+        "Initial warranty schema: car_catalog, users, warranty_claims, sales_pipeline with helpful indexes"
+    )
+
+
 def seed_data(engine: Optional[Engine] = None) -> None:
     seed_realistic_data(engine=engine)
 

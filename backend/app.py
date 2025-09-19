@@ -145,8 +145,16 @@ def create_app() -> FastAPI:
     @app.post("/api/db/init")
     def db_init(x_api_key: Optional[str] = Header(default=None)) -> Any:  # noqa: ANN401
         _require_api_key(x_api_key)
-        init_schema()
-        return {"status": "ok"}
+        # Prefer Alembic upgrade head if available
+        try:
+            import subprocess, sys
+            env = dict(os.environ)
+            env["DB_URL"] = env.get("DATABASE_URL", "postgresql+psycopg://chatbot:chatbot@localhost:5432/chatbot")
+            subprocess.run([sys.executable, "-m", "alembic", "upgrade", "head"], check=True, env=env, cwd=os.path.dirname(os.path.dirname(__file__)))
+            return {"status": "ok", "via": "alembic"}
+        except Exception:
+            init_schema()
+            return {"status": "ok", "via": "raw_sql"}
 
     @app.post("/api/db/seed")
     def db_seed(x_api_key: Optional[str] = Header(default=None)) -> Any:  # noqa: ANN401
