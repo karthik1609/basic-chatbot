@@ -21,7 +21,7 @@ def tool_retrieve_docs(query: str, top_k: int = 6) -> List[Dict[str, Any]]:
     ]
 
 
-def tool_sql(query: str) -> List[Dict[str, Any]]:
+def tool_sql(query: str, *, statement_timeout_ms: int = 8000) -> List[Dict[str, Any]]:
     # Strip markdown fences like ```sql ... ``` if present
     def _strip_sql_markdown(q: str) -> str:
         q2 = q.strip()
@@ -38,20 +38,72 @@ def tool_sql(query: str) -> List[Dict[str, Any]]:
         return q2.strip()
 
     query = _strip_sql_markdown(query)
-    # psycopg treats % as placeholder introducer; ensure literal percent usage in LIKE is escaped
-    # Replace single % with %% unless it's part of a PostgreSQL concatenation '||' pattern sequence like '%...%'
-    # A safe general approach is to double all % characters. SQL literals '%foo%' remain valid as '%%foo%%'.
-    query = query.replace('%', '%%')
+
+    # Escape percent signs only inside single-quoted string literals to satisfy psycopg's
+    # pyformat scanning while preserving operators like modulo outside strings.
+    def _escape_percents_in_string_literals(q: str) -> str:
+        out_chars: List[str] = []
+        in_str = False
+        i = 0
+        while i < len(q):
+            ch = q[i]
+            if ch == "'":
+                # toggle string state unless it's an escaped single quote ''
+                if in_str:
+                    # Lookahead for doubled quote (escaped)
+                    if i + 1 < len(q) and q[i + 1] == "'":
+                        # Escaped quote inside string
+                        out_chars.append("''")
+                        i += 2
+                        continue
+                    else:
+                        in_str = False
+                        out_chars.append(ch)
+                        i += 1
+                        continue
+                else:
+                    in_str = True
+                    out_chars.append(ch)
+                    i += 1
+                    continue
+            if in_str and ch == '%':
+                out_chars.append('%%')
+                i += 1
+                continue
+            out_chars.append(ch)
+            i += 1
+        return ''.join(out_chars)
+
+    query = _escape_percents_in_string_literals(query)
     engine = get_engine()
-    try:
-        with engine.connect() as conn:
-            res = conn.exec_driver_sql(query)
-            columns = list(res.keys()) if res.returns_rows else []
-            rows = [dict(zip(columns, row)) for row in res.fetchall()] if res.returns_rows else []
-        logger.info("tool_sql executed", extra={"rows": len(rows)})
-        return rows
-    except SQLAlchemyError as exc:  # return structured error for the model to recover
-        logger.error("tool_sql error", exc_info=True)
-        return [{"error": str(exc), "query": query}]
+    attempts = 0
+    last_err: str | None = None
+    while attempts < 2:
+        attempts += 1
+        try:
+            with engine.connect() as conn:
+                # Set a per-statement timeout to avoid hanging queries
+                try:
+                    conn.exec_driver_sql(f"SET LOCAL statement_timeout = {int(statement_timeout_ms)}")
+                except Exception:
+                    # Some drivers require transaction for LOCAL; fallback to session-level
+                    try:
+                        conn.exec_driver_sql(f"SET statement_timeout = {int(statement_timeout_ms)}")
+                    except Exception:
+                        pass
+                res = conn.exec_driver_sql(query)
+                columns = list(res.keys()) if res.returns_rows else []
+                rows = [dict(zip(columns, row)) for row in res.fetchall()] if res.returns_rows else []
+            logger.info("tool_sql executed", extra={"rows": len(rows)})
+            return rows
+        except SQLAlchemyError as exc:  # return structured error for the model to recover
+            last_err = str(exc)
+            logger.error("tool_sql error", exc_info=True)
+            # retry once for transient/timeout-like errors
+            low = last_err.lower()
+            if attempts < 2 and ("timeout" in low or "connection" in low or "deadlock" in low):
+                continue
+            break
+    return [{"error": last_err or "unknown sql error", "query": query}]
 
 

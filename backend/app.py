@@ -1,7 +1,8 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
+import os
 
 from .config import settings
 from .rag import build_or_update_index, retrieve_relevant_chunks
@@ -17,19 +18,37 @@ def create_app() -> FastAPI:
     logger = logging.getLogger("app")
     app = FastAPI(title="PDF RAG Chatbot")
 
+    # CORS: allow only typical browser origins; can be overridden via env ORIGINS
+    allowed_origins = os.getenv("ALLOWED_ORIGINS", "*").split(",")
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=allowed_origins,
         allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["content-type", "authorization", "x-request-id", "x-api-key"],
     )
 
     class IngestResponse(BaseModel):
         chunks_indexed: int
 
+    def _require_api_key(x_api_key: Optional[str]) -> None:
+        expected = os.getenv("API_KEY")
+        if expected and x_api_key != expected:
+            raise HTTPException(status_code=401, detail="invalid api key")
+
+    @app.middleware("http")
+    async def add_request_id(request: Request, call_next):
+        req_id = request.headers.get("x-request-id") or request.headers.get("x-correlation-id")
+        if not req_id:
+            import uuid
+            req_id = uuid.uuid4().hex
+        response = await call_next(request)
+        response.headers["x-request-id"] = req_id
+        return response
+
     @app.post("/api/ingest", response_model=IngestResponse)
-    def ingest() -> Any:  # noqa: ANN401
+    def ingest(x_api_key: Optional[str] = Header(default=None)) -> Any:  # noqa: ANN401
+        _require_api_key(x_api_key)
         logger.info("/api/ingest called")
         result = build_or_update_index()
         logger.info("/api/ingest completed", extra={"chunks_indexed": int(result.get("chunks", 0))})
@@ -50,7 +69,8 @@ def create_app() -> FastAPI:
         context: List[ContextItem]
 
     @app.post("/api/chat", response_model=ChatResponse)
-    def chat(req: ChatRequest) -> Any:  # noqa: ANN401
+    def chat(req: ChatRequest, x_api_key: Optional[str] = Header(default=None)) -> Any:  # noqa: ANN401
+        _require_api_key(x_api_key)
         # Default language
         language = req.language or "en"
         logger.info("/api/chat called", extra={"language": language})
@@ -123,12 +143,14 @@ def create_app() -> FastAPI:
 
     # DB admin endpoints
     @app.post("/api/db/init")
-    def db_init() -> Any:  # noqa: ANN401
+    def db_init(x_api_key: Optional[str] = Header(default=None)) -> Any:  # noqa: ANN401
+        _require_api_key(x_api_key)
         init_schema()
         return {"status": "ok"}
 
     @app.post("/api/db/seed")
-    def db_seed() -> Any:  # noqa: ANN401
+    def db_seed(x_api_key: Optional[str] = Header(default=None)) -> Any:  # noqa: ANN401
+        _require_api_key(x_api_key)
         seed_data()
         return {"status": "ok"}
 
@@ -147,7 +169,8 @@ def create_app() -> FastAPI:
         ask: Optional[str] = None
 
     @app.post("/api/agent/chat", response_model=AgentChatResponse)
-    async def agent_chat(req: AgentChatRequest) -> Any:  # noqa: ANN401
+    async def agent_chat(req: AgentChatRequest, x_api_key: Optional[str] = Header(default=None)) -> Any:  # noqa: ANN401
+        _require_api_key(x_api_key)
         result = await run_agentic_chat(req.message, req.language, req.session_id)
         return result
 
