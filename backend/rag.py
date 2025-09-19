@@ -133,6 +133,19 @@ def _chunk_text(text: str, target_words: int = 320, overlap_sents: int = 2) -> L
 
 
 def _embed_texts(texts: List[str]) -> np.ndarray:
+    # Fake embedding mode for CI/Offline runs
+    if os.getenv("FAKE_EMBED", "") == "1" or (os.getenv("OPENAI_API_KEY", "").lower() in ("", "dummy")):
+        dim = 384
+        arr = np.zeros((len(texts), dim), dtype=np.float32)
+        for i, t in enumerate(texts):
+            seed = abs(hash(t)) % (2**32)
+            rng = np.random.default_rng(seed)
+            v = rng.normal(size=dim).astype(np.float32)
+            # normalize
+            v /= (np.linalg.norm(v) + 1e-12)
+            arr[i] = v
+        return arr
+
     client = get_openai_client()
     response = client.embeddings.create(
         model=settings.embedding_model,
