@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Markdown } from '@/components/markdown';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Wand2, Database, DatabaseBackup } from 'lucide-react';
+import { Wand2, Database, DatabaseBackup, GitBranch } from 'lucide-react';
 import { Textarea } from '@/components/ui/textarea';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Toaster } from '@/components/ui/sonner';
@@ -152,11 +152,12 @@ export default function ChatPage() {
                   {m.role === 'assistant' ? (
                     <Button
                       type="button"
-                      variant="ghost"
-                      className="h-6 px-2 text-xs"
-                      onClick={() => { setFlowOpenFor(flowOpenFor === m.id ? null : m.id); setTraceOpenFor(prev => prev === m.id ? null : null); }}
+                      variant="outline"
+                      className="h-6 px-2 text-xs border-amber-400 text-amber-300 hover:bg-amber-900/20"
+                      disabled={!m.trace || (Array.isArray(m.trace) && m.trace.length === 0)}
+                      onClick={() => { if (!(!m.trace || (Array.isArray(m.trace) && m.trace.length === 0))) { setFlowOpenFor(flowOpenFor === m.id ? null : m.id); setTraceOpenFor(prev => prev === m.id ? null : null); } }}
                     >
-                      {flowOpenFor === m.id ? 'Hide flow' : 'Show flow'}
+                      <GitBranch className="w-3.5 h-3.5 mr-1" /> {flowOpenFor === m.id ? 'Hide flow' : 'Show flow'}
                     </Button>
                   ) : null}
                 </div>

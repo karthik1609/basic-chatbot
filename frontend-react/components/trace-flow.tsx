@@ -74,6 +74,9 @@ export default function TraceFlow({ trace }: { trace: RFTrace }) {
 
   return (
     <div className="relative w-full h-full">
+      {(!trace || trace.length === 0) ? (
+        <div className="text-xs opacity-70">No flow available for this message.</div>
+      ) : null}
       <ReactFlow
         nodes={nodes}
         edges={edges}
