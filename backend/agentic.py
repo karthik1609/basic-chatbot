@@ -504,6 +504,46 @@ async def _run_agentic_chat_inner(message: str, language: str | None = None, ses
     answer_text = comp.get("answer", "")
     trace.append({"stage": "compose", "reasoning": comp.get("reasoning_bullets", [])})
 
+    # Enforce citation hygiene: ensure each non-empty line has [D#] and/or [S#] if evidence was used
+    def _ensure_citations(text: str, used_citations: List[Dict[str, Any]], need_docs: bool, need_sql: bool) -> str:
+        try:
+            import re as _re
+            doc_tags = [c.get("tag") for c in used_citations if c.get("type") == "doc" and c.get("tag")]
+            sql_tags = [c.get("tag") for c in used_citations if c.get("type") == "sql" and c.get("tag")]
+            if not text:
+                return text
+            in_code = False
+            lines = text.split("\n")
+            out_lines: List[str] = []
+            for line in lines:
+                stripped = line.strip()
+                if stripped.startswith("```"):
+                    in_code = not in_code
+                    out_lines.append(line)
+                    continue
+                if in_code or not stripped:
+                    out_lines.append(line)
+                    continue
+                has_cite = bool(_re.search(r"\[(?:D|S)\d+[^\]]*\]", line))
+                if not has_cite:
+                    tokens: List[str] = []
+                    if need_docs and doc_tags:
+                        # attach up to two highest-priority doc tags
+                        tokens.extend([f"[{doc_tags[0]}]"])
+                        if len(doc_tags) > 1:
+                            tokens.append(f"[{doc_tags[1]}]")
+                    if need_sql and sql_tags:
+                        tokens.append(f"[{sql_tags[0]}]")
+                    if tokens:
+                        line = line.rstrip() + " " + " ".join(tokens)
+                out_lines.append(line)
+            return "\n".join(out_lines)
+        except Exception:
+            return text
+
+    if requires_docs or requires_sql:
+        answer_text = _ensure_citations(answer_text, citations, requires_docs, requires_sql)
+
     # 5.5) Nitpicker Verifier (multi-pass, recursive) — modular
     nitpicker_rounds: List[Dict[str, Any]] = []
     threshold = 90

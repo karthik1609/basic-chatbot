@@ -8,6 +8,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Toaster } from '@/components/ui/sonner';
 import { toast } from 'sonner';
+import TraceFlow, { type RFTrace, type RFTraceEntry } from '@/components/trace-flow';
 
 export type Citation = { type: 'doc'|'sql'; tag: string; source?: string; chunk_index?: number; score?: number; rows?: number; query?: string; text?: string };
 
@@ -30,6 +31,7 @@ export default function ChatPage() {
   const [loading, setLoading] = useState(false);
   const [traceOpenFor, setTraceOpenFor] = useState<string | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const [flowOpenFor, setFlowOpenFor] = useState<string | null>(null);
 
   const endRef = useRef<HTMLDivElement | null>(null);
   useEffect(()=>{ endRef.current?.scrollIntoView({behavior:'smooth'}); }, [messages]);
@@ -83,9 +85,10 @@ export default function ChatPage() {
     setSessionId(sid);
     setMessages([]);
     setTraceOpenFor(null);
+    setFlowOpenFor(null);
   }
 
-  const selectedMsg: Msg | undefined = useMemo(() => messages.find(m => m.id === traceOpenFor), [messages, traceOpenFor]);
+  const selectedMsg: Msg | undefined = useMemo(() => messages.find(m => m.id === (traceOpenFor || flowOpenFor)), [messages, traceOpenFor, flowOpenFor]);
   const decisionLine = useMemo(() => {
     if (!selectedMsg) return '';
     const conf = typeof selectedMsg.confidence === 'number' ? ` | confidence=${selectedMsg.confidence.toFixed(3)}` : '';
@@ -94,20 +97,27 @@ export default function ChatPage() {
   }, [selectedMsg]);
 
   const traceOpen = Boolean(traceOpenFor);
+  const flowOpen = Boolean(flowOpenFor);
   return (
     <div className="min-h-screen bg-background text-foreground p-4">
       <Toaster />
-      <div className={`mx-auto flex gap-4 ${traceOpen ? 'md:flex-row' : 'md:flex-row'} flex-col max-w-screen-2xl`}>
-        {traceOpen ? (
+      <div className={`mx-auto flex gap-4 md:flex-row flex-col max-w-screen-2xl`}>
+        {(traceOpen || flowOpen) ? (
           <aside className="md:w-1/3 w-full">
-            <Card className="p-4 h-full">
-              <div className="font-medium mb-2">Reasoning Trace</div>
+            <Card className="p-4 h-full max-h-[calc(100vh-2rem)] overflow-auto">
+              <div className="font-medium mb-2">{traceOpen ? 'Reasoning Trace' : 'Reasoning Flow'}</div>
               {decisionLine ? <div className="text-xs mb-2 whitespace-pre-wrap">{decisionLine}</div> : null}
-              <pre className="text-xs whitespace-pre-wrap">{selectedMsg?.trace ? JSON.stringify(selectedMsg.trace, null, 2) : 'No trace'}</pre>
+              {traceOpen ? (
+                <pre className="text-xs whitespace-pre-wrap">{selectedMsg?.trace ? JSON.stringify(selectedMsg.trace, null, 2) : 'No trace'}</pre>
+              ) : (
+                <div className="h-[70vh] min-h-[360px]">
+                  <TraceFlow trace={(selectedMsg?.trace as unknown as RFTrace) || []} />
+                </div>
+              )}
             </Card>
           </aside>
         ) : null}
-        <Card className={`p-4 flex flex-col ${traceOpen ? 'md:w-2/3 w-full' : 'w-full'}`}>
+        <Card className={`p-4 flex flex-col ${(traceOpen || flowOpen) ? 'md:w-2/3 w-full' : 'w-full'} max-h-[calc(100vh-2rem)]`}>
         <div className="flex items-center justify-between mb-3">
           <div className="text-sm opacity-70">Session: {sessionId}</div>
           <div className="flex gap-2">
@@ -134,9 +144,19 @@ export default function ChatPage() {
                       type="button"
                       variant="ghost"
                       className="h-6 px-2 text-xs"
-                      onClick={() => setTraceOpenFor(traceOpenFor === m.id ? null : m.id)}
+                      onClick={() => { setTraceOpenFor(traceOpenFor === m.id ? null : m.id); setFlowOpenFor(prev => prev === m.id ? null : null); }}
                     >
                       {traceOpenFor === m.id ? 'Hide reasoning' : 'Show reasoning'}
+                    </Button>
+                  ) : null}
+                  {m.role === 'assistant' ? (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      className="h-6 px-2 text-xs"
+                      onClick={() => { setFlowOpenFor(flowOpenFor === m.id ? null : m.id); setTraceOpenFor(prev => prev === m.id ? null : null); }}
+                    >
+                      {flowOpenFor === m.id ? 'Hide flow' : 'Show flow'}
                     </Button>
                   ) : null}
                 </div>

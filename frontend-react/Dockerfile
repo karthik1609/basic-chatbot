@@ -5,7 +5,14 @@ ARG NEXT_PUBLIC_FASTAPI_EXTERNAL_BASE=http://localhost:8000
 ENV NEXT_PUBLIC_FASTAPI_EXTERNAL_BASE=${NEXT_PUBLIC_FASTAPI_EXTERNAL_BASE}
 
 COPY package*.json ./
-RUN npm ci --no-audit --no-fund
+# Prefer reproducible ci install; fall back to npm install when lock is out of sync
+RUN set -e; \
+  if npm ci --no-audit --no-fund; then \
+    echo "npm ci succeeded"; \
+  else \
+    echo "npm ci failed; falling back to npm install"; \
+    npm install --no-audit --no-fund; \
+  fi
 
 COPY . .
 RUN npm run build
