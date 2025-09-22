@@ -32,6 +32,7 @@ export default function ChatPage() {
   const [traceOpenFor, setTraceOpenFor] = useState<string | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [flowOpenFor, setFlowOpenFor] = useState<string | null>(null);
+  const [lang, setLang] = useState<string>('en');
 
   const endRef = useRef<HTMLDivElement | null>(null);
   useEffect(()=>{ endRef.current?.scrollIntoView({behavior:'smooth'}); }, [messages]);
@@ -43,6 +44,8 @@ export default function ChatPage() {
       window.localStorage.setItem('session_id', sid);
     }
     setSessionId(sid);
+    const savedLang = window.localStorage.getItem('lang');
+    if (savedLang) setLang(savedLang);
   }, []);
 
   async function onSubmit(e?: React.FormEvent) {
@@ -53,7 +56,7 @@ export default function ChatPage() {
     setMessages(prev => [...prev, { id: crypto.randomUUID(), role: 'user', content: userText }]);
     setLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/api/agent/chat`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: userText, language: 'en', session_id: sessionId }) });
+      const res = await fetch(`${API_BASE}/api/agent/chat`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: userText, language: lang, session_id: sessionId }) });
       const data = await res.json();
       if (data.session_id) {
         window.localStorage.setItem('session_id', data.session_id);
@@ -119,7 +122,24 @@ export default function ChatPage() {
         ) : null}
         <Card className={`p-4 flex flex-col ${(traceOpen || flowOpen) ? 'md:w-2/3 w-full' : 'w-full'} max-h-[calc(100vh-2rem)]`}>
         <div className="flex items-center justify-between mb-3">
-          <div className="text-sm opacity-70">Session: {sessionId}</div>
+          <div className="text-sm opacity-70 flex items-center gap-3">
+            <span>Session: {sessionId}</span>
+            <label className="text-xs opacity-70" htmlFor="lang-select">Language</label>
+            <select
+              id="lang-select"
+              className="bg-background border border-border rounded px-2 py-1 text-xs"
+              value={lang}
+              onChange={(e)=>{ const v = (e.target as HTMLSelectElement).value; setLang(v); window.localStorage.setItem('lang', v); }}
+              disabled={loading}
+            >
+              <option value="en">English</option>
+              <option value="nl">Nederlands</option>
+              <option value="sv">Svenska</option>
+              <option value="de">Deutsch</option>
+              <option value="fr">Français</option>
+              <option value="es">Español</option>
+            </select>
+          </div>
           <div className="flex gap-2">
             <Button variant="secondary" onClick={async()=>{ try{ toast('Rebuilding index...'); const r=await fetch(`${API_BASE}/api/ingest`,{method:'POST'}); if(!r.ok){ const t=await r.text(); throw new Error(t||`HTTP ${r.status}`);} const d=await r.json(); toast.success(`Indexed ${d.chunks_indexed ?? '?' } chunks`);}catch(e){ const err = e instanceof Error ? e.message : String(e); toast.error(`Ingest failed: ${err}`);} }} disabled={loading}>
               <Wand2 className="w-4 h-4 mr-1"/> Ingest
