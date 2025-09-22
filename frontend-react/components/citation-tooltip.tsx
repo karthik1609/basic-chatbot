@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 
 type Props = {
   label: string;
@@ -14,6 +15,8 @@ export function CitationTooltip({ label, content }: Props) {
   const startRef = useRef<number | null>(null);
   const rootRef = useRef<HTMLSpanElement | null>(null);
   const tooltipId = useId();
+  const [portalEl, setPortalEl] = useState<HTMLElement | null>(null);
+  const [coords, setCoords] = useState<{ top: number; left: number; maxWidth: number }>({ top: 0, left: 0, maxWidth: 960 });
 
   function stopDwell(resetProgress: boolean) {
     if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
@@ -41,6 +44,42 @@ export function CitationTooltip({ label, content }: Props) {
     };
     rafRef.current = requestAnimationFrame(tick);
   }
+
+  // Setup portal host once on client
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const el = document.createElement('div');
+    el.setAttribute('data-citation-portal', '');
+    document.body.appendChild(el);
+    setPortalEl(el);
+    return () => {
+      document.body.removeChild(el);
+    };
+  }, []);
+
+  // Position tooltip near the trigger using viewport coordinates
+  useEffect(() => {
+    if (!open) return;
+    function compute() {
+      const host = rootRef.current;
+      if (!host) return;
+      const rect = host.getBoundingClientRect();
+      const margin = 8;
+      const vw = Math.max(document.documentElement.clientWidth, window.innerWidth || 0);
+      const desiredWidth = Math.min(vw * 0.9, 960);
+      let left = rect.left;
+      if (left + desiredWidth > vw - margin) left = Math.max(margin, vw - desiredWidth - margin);
+      const top = rect.bottom + margin;
+      setCoords({ top, left, maxWidth: desiredWidth });
+    }
+    compute();
+    window.addEventListener('resize', compute);
+    window.addEventListener('scroll', compute, true);
+    return () => {
+      window.removeEventListener('resize', compute);
+      window.removeEventListener('scroll', compute, true);
+    };
+  }, [open]);
 
   // Outside click to close when locked/open
   useEffect(() => {
@@ -121,15 +160,19 @@ export function CitationTooltip({ label, content }: Props) {
           }}
         />
       ) : null}
-      {open && (
-        <span
-          id={tooltipId}
-          role="tooltip"
-          className="absolute left-0 top-full mt-1 z-50 bg-popover text-popover-foreground text-xs p-3 rounded border border-border shadow overflow-auto w-[min(80vw,50rem)] max-h-96 whitespace-pre-wrap"
-        >
-          {content}
-        </span>
-      )}
+      {open && portalEl
+        ? createPortal(
+            <div
+              id={tooltipId}
+              role="tooltip"
+              style={{ position: 'fixed', top: coords.top, left: coords.left, maxWidth: coords.maxWidth }}
+              className="z-[9999] bg-popover text-popover-foreground text-xs p-3 rounded border border-border shadow overflow-auto w-[min(90vw,60rem)] max-h-[70vh] whitespace-pre-wrap"
+            >
+              {content}
+            </div>,
+            portalEl
+          )
+        : null}
     </span>
   );
 }

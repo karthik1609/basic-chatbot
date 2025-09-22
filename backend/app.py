@@ -18,8 +18,42 @@ def create_app() -> FastAPI:
     logger = logging.getLogger("app")
     app = FastAPI(title="PDF RAG Chatbot")
 
+    # Optional OpenTelemetry setup (no-op if OTLP not reachable)
+    try:
+        from opentelemetry import trace
+        from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+        from opentelemetry.sdk.resources import Resource
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import BatchSpanProcessor
+        from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+        from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
+        from .db import get_engine
+
+        otlp_endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+        resource = Resource.create({"service.name": os.getenv("OTEL_SERVICE_NAME", "chatbot-backend")})
+        provider = TracerProvider(resource=resource)
+        trace.set_tracer_provider(provider)
+        if otlp_endpoint:
+            exporter = OTLPSpanExporter(endpoint=otlp_endpoint)
+            provider.add_span_processor(BatchSpanProcessor(exporter))
+        FastAPIInstrumentor.instrument_app(app)
+        try:
+            SQLAlchemyInstrumentor().instrument(engine=get_engine())
+        except Exception:
+            pass
+    except Exception:
+        pass
+
     # CORS: allow only typical browser origins; can be overridden via env ORIGINS
-    allowed_origins = os.getenv("ALLOWED_ORIGINS", "*").split(",")
+    _origins_env = os.getenv("ALLOWED_ORIGINS")
+    if _origins_env:
+        allowed_origins = [o.strip() for o in _origins_env.split(",") if o.strip()]
+    else:
+        # Safer defaults for dev instead of wildcard
+        allowed_origins = [
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+        ]
     app.add_middleware(
         CORSMiddleware,
         allow_origins=allowed_origins,

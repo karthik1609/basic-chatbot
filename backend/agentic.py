@@ -12,6 +12,18 @@ from .logging_setup import configure_logging
 from .openai_client import get_openai_client
 from .config import settings
 from .agent_tools import tool_retrieve_docs as _tool_retrieve_docs, tool_sql as _tool_sql
+from .agent_pipeline.stages import (
+    extract_intent_slots as pipeline_extract_intent_slots,
+    decide_policy as pipeline_decide_policy,
+    generate_elicitation_question as pipeline_generate_elicitation_question,
+    retrieve_documents as pipeline_retrieve_documents,
+    generate_sql as pipeline_generate_sql,
+    compose_answer as pipeline_compose_answer,
+    nitpick_verify as pipeline_nitpick_verify,
+    finalize_answer as pipeline_finalize_answer,
+    best_snippet_for_chunk as pipeline_best_snippet,
+)
+from .agent_pipeline.stages import normalize_input as pipeline_normalize_input
 
 
 configure_logging()
@@ -240,41 +252,33 @@ async def _run_agentic_chat_inner(message: str, language: str | None = None, ses
     confidence: float = 0.0
 
     # 1) Input Normalizer
-    normalizer_instr = (
-        f"Respond in language code '{lang}'. You normalize user input.\n"
-        "- Fix obvious typos and normalize numbers, dates, and units.\n"
-        "- Remove irrelevant fluff.\n"
-        "- Mask PII: replace emails, phones with placeholders.\n"
-        "Return only the cleaned text."
-    )
-    normalized = await _run_text_agent("InputNormalizer", normalizer_instr, message)
+    # Modular stage: normalization via pipeline
+    try:
+        normalized = pipeline_normalize_input(message, lang)
+    except Exception:
+        # fallback to previous mini-agent approach if pipeline fails
+        normalizer_instr = (
+            f"Respond in language code '{lang}'. You normalize user input.\n"
+            "- Fix obvious typos and normalize numbers, dates, and units.\n"
+            "- Remove irrelevant fluff.\n"
+            "- Mask PII: replace emails, phones with placeholders.\n"
+            "Return only the cleaned text."
+        )
+        normalized = await _run_text_agent("InputNormalizer", normalizer_instr, message)
     trace.append({"stage": "normalize", "normalized": normalized})
 
     # 2) Intent & Slot Extractor
-    extractor_instr = (
-        f"Respond in language code '{lang}'. Extract task intent and slots as compact JSON.\n"
-        "- intents: one of ['policy_question','sql_analytics','doc_lookup','small_talk','other']\n"
-        "- slots: key/value pairs relevant to the task\n"
-        "- missing_slots: critical slots not provided\n"
-        "- requires_docs: boolean\n"
-        "- requires_sql: boolean\n"
-        "Return JSON only."
-    )
-    extracted_raw = await _run_text_agent("IntentExtractor", extractor_instr, normalized)
+    # Modular stage: intent & slots
     intent = "other"
     slots: Dict[str, Any] = {}
-    missing_slots: List[str] = []
-    requires_docs = False
-    requires_sql = False
     try:
-        j = json.loads(extracted_raw)
-        intent = j.get("intent", intent)
-        slots = j.get("slots", {}) or {}
-        missing_slots = list(j.get("missing_slots", []) or [])
-        requires_docs = bool(j.get("requires_docs", False))
-        requires_sql = bool(j.get("requires_sql", False))
+        intent, slots = pipeline_extract_intent_slots(normalized, lang)
     except Exception:
         pass
+    # Heuristic determinations for docs/sql needs based on intent/slots
+    requires_docs = intent in ("policy_question", "doc_lookup")
+    requires_sql = intent in ("sql_analytics",)
+    missing_slots: List[str] = []
     trace.append({
         "stage": "extract",
         "intent": intent,
@@ -285,16 +289,10 @@ async def _run_agentic_chat_inner(message: str, language: str | None = None, ses
     })
 
     # 3) Uncertainty & Decision Policy
-    must_ask = len(missing_slots) > 0
+    must_ask = pipeline_decide_policy(missing_slots) == "ASK"
     ask_question = None
     if must_ask:
-        ask_instr = (
-            f"Respond in language code '{lang}'. You generate one concise elicitation question to collect: {missing_slots}.\n"
-            "- Batch into one question.\n"
-            "- Offer options if suitable.\n"
-            "- Avoid yes/no unless appropriate. Return only the question."
-        )
-        ask_question = await _run_text_agent("Elicitation", ask_instr, normalized)
+        ask_question = pipeline_generate_elicitation_question(lang, intent, missing_slots, slots)
         decision = "ASK"
         trace.append({"stage": "ask", "question": ask_question})
         # Memory update and return early awaiting user reply
@@ -350,7 +348,7 @@ async def _run_agentic_chat_inner(message: str, language: str | None = None, ses
     # ---- Document retrieval with point-aware evidence selection ----
     if requires_docs:
         try:
-            raw_results = _tool_retrieve_docs(query=normalized, top_k=10)
+            raw_results = pipeline_retrieve_documents(query=normalized, top_k=10)
             # Prepare candidates
             candidates: List[Dict[str, Any]] = []
             for idx, item in enumerate(raw_results, start=1):
@@ -359,7 +357,8 @@ async def _run_agentic_chat_inner(message: str, language: str | None = None, ses
                     "source": item.get("metadata", {}).get("source"),
                     "chunk_index": item.get("metadata", {}).get("chunk_index"),
                     "score": item.get("score"),
-                    "text": (item.get("text") or "")[:1200],
+                    # Keep full chunk text for rich tooltips; frontend clamps via CSS
+                    "text": (item.get("text") or ""),
                 })
             # Build compact snippet list for the selector
             cand_lines: List[str] = []
@@ -418,31 +417,11 @@ async def _run_agentic_chat_inner(message: str, language: str | None = None, ses
                     if t not in tag_to_point:
                         tag_to_point[t] = p
 
-            def _best_sentences(text: str, point_label: str) -> str:
-                import re
-                # naive sentence split
-                sents = re.split(r"(?<=[\.!?])\s+", text.strip())
-                if not sents:
-                    return text[:600]
-                # keywords from normalized question + point label
-                kw_src = (normalized + " " + (point_label or "")).lower()
-                kws = [w for w in re.findall(r"[a-zA-Z]{3,}", kw_src) if len(w) > 2]
-                if not kws:
-                    return " ".join(sents[:3])[:600]
-                def score_sent(s: str) -> int:
-                    s_low = s.lower()
-                    return sum(1 for k in kws if k in s_low)
-                ranked = sorted(sents, key=score_sent, reverse=True)
-                snippet = " ".join(ranked[:3])
-                if len(snippet) < 200 and len(ranked) > 3:
-                    snippet = " ".join(ranked[:5])
-                return snippet[:600]
-
             for c in candidates:
                 if c["tag"] in selected_tags:
                     point_label = tag_to_point.get(c["tag"], points[0])
                     text_full = (c.get("text") or "")
-                    snippet = _best_sentences(text_full, point_label)
+                    snippet = pipeline_best_snippet(text_full, normalized, point_label)
                     citations.append({
                         "type": "doc",
                         "tag": c["tag"],
@@ -474,8 +453,7 @@ async def _run_agentic_chat_inner(message: str, language: str | None = None, ses
 
         if requires_sql:
             try:
-                sql_query = await _run_text_agent("SQLGenerator", constraints_text, prompt_text)
-                candidate_sql = sql_query
+                candidate_sql = pipeline_generate_sql(lang, intent, slots, db_schema)
                 try:
                     import re
                     if re.search(r"\bwarranty_status\b", candidate_sql, flags=re.IGNORECASE):
@@ -518,90 +496,31 @@ async def _run_agentic_chat_inner(message: str, language: str | None = None, ses
     if requires_docs:
         trace.append({"stage": "retrieve_docs", "status": "ok" if docs_evidence else "none"})
 
-    # 5) Draft Answer Composer
-    composer_instr = (
-        f"Respond in language code '{lang}'. Compose a concise answer.\n"
-        "- Use only the provided evidence.\n"
-        "- Enforce one inline citation per atomic claim sentence: use [D#] and/or [S#].\n"
-        "- Prefer Markdown formatting; use Markdown tables for tabular data.\n"
-        "- Also produce a short reasoning outline (3-5 bullets).\n"
-        "Return as JSON with keys: answer, reasoning_bullets (array)."
-    )
-    evidence_block_lines: List[str] = []
-    for d in docs_evidence:
-        evidence_block_lines.append(f"[{d['tag']}] {d['snippet']}")
+    # 5) Draft Answer Composer (modular)
+    sql_preview = None
     if sql_rows:
-        preview = sql_rows[:5]
-        evidence_block_lines.append(f"[S1] SQL preview: {json.dumps(preview, ensure_ascii=False)[:800]}")
-    evidence_block = "\n\n".join(evidence_block_lines)
-    compose_input = (
-        "Normalized question: " + normalized + "\n\n" +
-        "Slots: " + json.dumps(slots, ensure_ascii=False) + "\n\n" +
-        ("Evidence:\n" + evidence_block if evidence_block else "")
-    )
-    composed_raw = await _run_text_agent("Composer", composer_instr, compose_input)
-    answer_text = composed_raw
-    reasoning_bullets: List[str] = []
-    try:
-        j = json.loads(composed_raw)
-        answer_text = j.get("answer", answer_text)
-        reasoning_bullets = list(j.get("reasoning_bullets", []) or [])
-    except Exception:
-        pass
-    trace.append({"stage": "compose", "reasoning": reasoning_bullets})
+        sql_preview = json.dumps(sql_rows[:5], ensure_ascii=False)[:800]
+    comp = pipeline_compose_answer(lang, normalized, slots, docs_evidence, sql_preview)
+    answer_text = comp.get("answer", "")
+    trace.append({"stage": "compose", "reasoning": comp.get("reasoning_bullets", [])})
 
-    # 5.5) Nitpicker Verifier (multi-pass, recursive)
-    async def _run_nitpicker(
-        question: str,
-        draft_answer: str,
-        doc_citations: List[Dict[str, Any]],
-        sql_query_text: Optional[str],
-    ) -> Dict[str, Any]:
-        """Run a verifier that checks claim attribution, entailment, coverage, consistency, and citation hygiene.
-        Returns JSON with keys: compliance_score (0-100), findings (list), patches (list of edit instructions),
-        revised_answer (optional string)."""
-        # Build compact evidence map for the verifier
-        docs_map_lines: List[str] = []
-        for c in doc_citations:
-            tag = c.get("tag")
-            src = c.get("source")
-            idx = c.get("chunk_index")
-            txt = (c.get("text") or "")
-            docs_map_lines.append(f"[{tag}] {src}#{idx}\n{txt}")
-        docs_block = "\n\n".join(docs_map_lines)
-
-        sql_block = sql_query_text or ""
-
-        nitpicker_instr = (
-            f"Respond in language code '{lang}'. You are Nitpicker, a deterministic verifier (temperature 0).\n"
-            "Run multi-pass checks on the draft answer against the provided evidence only.\n"
-            "Pass A — Claim extraction & attribution: split into atomic claims; each must have one citation [D#]/[S#].\n"
-            "Pass B — Entailment: for each (claim, cited-span), judge entailed/contradicted/unknown.\n"
-            "Pass C — Coverage: decompose the user question into sub-questions; mark omitted sub-answers.\n"
-            "Pass D — Consistency: sample alternative phrasings to detect divergences (logic-level).\n"
-            "Pass E — Citation hygiene: penalize broad/irrelevant citations; reward tight spans.\n"
-            "Scoring (0–100): heavy weight on faithfulness/entailment.\n"
-            "If score < 90, propose minimal patches and optionally provide a fully revised answer constrained to cited spans.\n"
-            "Return strict JSON with keys: {\"compliance_score\": number, \"findings\": array, \"patches\": array, \"revised_answer\": string|null}."
-        )
-        nitpicker_input = (
-            "User question:\n" + question + "\n\n" +
-            "Draft answer (Markdown with [Dx]/[Sx] citations):\n" + draft_answer + "\n\n" +
-            "Doc evidence (by tag):\n" + docs_block + "\n\n" +
-            ("SQL query [S1]:\n" + sql_block if sql_block else "")
-        )
-        raw = await _run_text_agent("Nitpicker", nitpicker_instr, nitpicker_input)
-        try:
-            return json.loads(raw)
-        except Exception:
-            return {"compliance_score": 0, "findings": [], "patches": [], "revised_answer": None}
-
-    # Recursive verification up to 3 rounds or threshold
+    # 5.5) Nitpicker Verifier (multi-pass, recursive) — modular
     nitpicker_rounds: List[Dict[str, Any]] = []
     threshold = 90
     for round_idx in range(1, 4):
-        ver = await _run_nitpicker(normalized, answer_text, [c for c in citations if c.get("type") == "doc"], sql_query)
-        score = float(ver.get("compliance_score") or 0)
+        docs_map = {}
+        for c in citations:
+            if c.get("type") == "doc" and c.get("tag") and c.get("text"):
+                docs_map[str(c["tag"]) ] = str(c.get("text") or "")
+        ver = pipeline_nitpick_verify(lang, normalized, answer_text, docs_map, sql_query, sql_rows)
+        raw_score = ver.get("compliance_score")
+        try:
+            score = float(raw_score)
+        except Exception:
+            score = 0.0
+        # Normalize to 0–100 if returned as 0–1
+        if 0.0 <= score <= 1.0:
+            score = score * 100.0
         nitpicker_rounds.append({"round": round_idx, "score": score, "findings": ver.get("findings", [])})
         if score >= threshold:
             break
@@ -611,15 +530,8 @@ async def _run_agentic_chat_inner(message: str, language: str | None = None, ses
         if isinstance(revised, str) and revised.strip():
             answer_text = revised
         else:
-            # Constrain the composer with targeted edits
-            patch_text = json.dumps(patches, ensure_ascii=False)
-            constrained_instr = composer_instr + "\n\nApply these targeted patches and corrections strictly, do not introduce new claims without citations. Patches: " + patch_text
-            recomposed_raw = await _run_text_agent("Composer", constrained_instr, compose_input)
-            try:
-                j2 = json.loads(recomposed_raw)
-                answer_text = j2.get("answer", recomposed_raw)
-            except Exception:
-                answer_text = recomposed_raw
+            comp2 = pipeline_compose_answer(lang, normalized, slots, docs_evidence, sql_preview)
+            answer_text = comp2.get("answer", answer_text)
 
     if nitpicker_rounds:
         trace.append({"stage": "nitpicker", "rounds": nitpicker_rounds})
@@ -631,6 +543,12 @@ async def _run_agentic_chat_inner(message: str, language: str | None = None, ses
         trace.append({"stage": "validate", "status": "low_evidence"})
     else:
         trace.append({"stage": "validate", "status": "ok"})
+
+    # Finalize
+    try:
+        answer_text = pipeline_finalize_answer(answer_text)
+    except Exception:
+        pass
 
     # Update memory and return
     _append_history(session_id, "user", message)

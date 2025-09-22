@@ -11,7 +11,16 @@ import { toast } from 'sonner';
 
 export type Citation = { type: 'doc'|'sql'; tag: string; source?: string; chunk_index?: number; score?: number; rows?: number; query?: string; text?: string };
 
-type Msg = { id: string; role: 'user'|'assistant'; content: string; citations?: Citation[] };
+type Msg = {
+  id: string;
+  role: 'user'|'assistant';
+  content: string;
+  citations?: Citation[];
+  trace?: TraceEntry[] | null;
+  decision?: string;
+  assumptions?: string[];
+  confidence?: number;
+};
 type TraceEntry = Record<string, unknown>;
 
 export default function ChatPage() {
@@ -19,10 +28,7 @@ export default function ChatPage() {
   const [messages, setMessages] = useState<Msg[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
-  const [trace, setTrace] = useState<TraceEntry[] | null>(null);
-  const [decision, setDecision] = useState<string>('');
-  const [assumptions, setAssumptions] = useState<string[]>([]);
-  const [confidence, setConfidence] = useState<number|undefined>(undefined);
+  const [traceOpenFor, setTraceOpenFor] = useState<string | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
 
   const endRef = useRef<HTMLDivElement | null>(null);
@@ -52,12 +58,17 @@ export default function ChatPage() {
         setSessionId(data.session_id);
       }
       const text = data.ask ? data.ask : (data.answer || '');
-      const msg: Msg = { id: crypto.randomUUID(), role: 'assistant', content: text, citations: (data.citations || []) as Citation[] };
+      const msg: Msg = {
+        id: crypto.randomUUID(),
+        role: 'assistant',
+        content: text,
+        citations: (data.citations || []) as Citation[],
+        trace: (data.trace || null) as TraceEntry[] | null,
+        decision: data.decision || '',
+        assumptions: (data.assumptions || []) as string[],
+        confidence: typeof data.confidence === 'number' ? data.confidence : undefined,
+      };
       setMessages(prev => [...prev, msg]);
-      setTrace(data.trace || null);
-      setDecision(data.decision || '');
-      setAssumptions(data.assumptions || []);
-      setConfidence(typeof data.confidence === 'number' ? data.confidence : undefined);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       setMessages(prev => [...prev, { id: crypto.randomUUID(), role: 'assistant', content: `Error: ${msg}` }]);
@@ -71,22 +82,32 @@ export default function ChatPage() {
     window.localStorage.setItem('session_id', sid);
     setSessionId(sid);
     setMessages([]);
-    setTrace(null);
-    setDecision('');
-    setAssumptions([]);
-    setConfidence(undefined);
+    setTraceOpenFor(null);
   }
 
+  const selectedMsg: Msg | undefined = useMemo(() => messages.find(m => m.id === traceOpenFor), [messages, traceOpenFor]);
   const decisionLine = useMemo(() => {
-    const conf = typeof confidence === 'number' ? ` | confidence=${confidence.toFixed(3)}` : '';
-    const assump = assumptions && assumptions.length ? `\nAssumptions: ${assumptions.join('; ')}` : '';
-    return decision ? `Decision: ${decision}${conf}${assump}` : '';
-  }, [decision, assumptions, confidence]);
+    if (!selectedMsg) return '';
+    const conf = typeof selectedMsg.confidence === 'number' ? ` | confidence=${selectedMsg.confidence.toFixed(3)}` : '';
+    const assump = selectedMsg.assumptions && selectedMsg.assumptions.length ? `\nAssumptions: ${selectedMsg.assumptions.join('; ')}` : '';
+    return selectedMsg.decision ? `Decision: ${selectedMsg.decision}${conf}${assump}` : '';
+  }, [selectedMsg]);
 
+  const traceOpen = Boolean(traceOpenFor);
   return (
-    <div className="min-h-screen bg-background text-foreground p-4 grid grid-cols-1 md:grid-cols-3 gap-4">
+    <div className="min-h-screen bg-background text-foreground p-4">
       <Toaster />
-      <Card className="p-4 md:col-span-2 flex flex-col">
+      <div className={`mx-auto flex gap-4 ${traceOpen ? 'md:flex-row' : 'md:flex-row'} flex-col max-w-screen-2xl`}>
+        {traceOpen ? (
+          <aside className="md:w-1/3 w-full">
+            <Card className="p-4 h-full">
+              <div className="font-medium mb-2">Reasoning Trace</div>
+              {decisionLine ? <div className="text-xs mb-2 whitespace-pre-wrap">{decisionLine}</div> : null}
+              <pre className="text-xs whitespace-pre-wrap">{selectedMsg?.trace ? JSON.stringify(selectedMsg.trace, null, 2) : 'No trace'}</pre>
+            </Card>
+          </aside>
+        ) : null}
+        <Card className={`p-4 flex flex-col ${traceOpen ? 'md:w-2/3 w-full' : 'w-full'}`}>
         <div className="flex items-center justify-between mb-3">
           <div className="text-sm opacity-70">Session: {sessionId}</div>
           <div className="flex gap-2">
@@ -106,7 +127,19 @@ export default function ChatPage() {
           {messages.map(m => (
             <div key={m.id} className={`mb-4 flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
               <div className={`max-w-[85%] rounded-xl px-3 py-2 ${m.role === 'user' ? 'bg-primary/15 border border-primary/30' : 'bg-secondary/20 border border-secondary/30'}`}>
-                <div className="text-xs opacity-60 mb-1">{m.role === 'user' ? 'You' : 'Assistant'}</div>
+                <div className="text-xs opacity-60 mb-1 flex items-center justify-between gap-3">
+                  <span>{m.role === 'user' ? 'You' : 'Assistant'}</span>
+                  {m.role === 'assistant' ? (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      className="h-6 px-2 text-xs"
+                      onClick={() => setTraceOpenFor(traceOpenFor === m.id ? null : m.id)}
+                    >
+                      {traceOpenFor === m.id ? 'Hide reasoning' : 'Show reasoning'}
+                    </Button>
+                  ) : null}
+                </div>
                 <div className="prose prose-invert max-w-none">
                   <Markdown citations={(m.citations || []).map(c => ({ tag: c.tag, text: c.text, query: c.query }))}>{m.content}</Markdown>
                 </div>
@@ -135,12 +168,6 @@ export default function ChatPage() {
             ) : 'Send'}
           </Button>
         </form>
-      </Card>
-      <div className="space-y-4">
-        <Card className="p-4">
-          <div className="font-medium mb-2">Reasoning Trace</div>
-          {decisionLine ? <div className="text-xs mb-2 whitespace-pre-wrap">{decisionLine}</div> : null}
-          <pre className="text-xs whitespace-pre-wrap">{trace ? JSON.stringify(trace, null, 2) : 'No trace'}</pre>
         </Card>
       </div>
     </div>

@@ -211,6 +211,12 @@ sequenceDiagram
 - Token limits: embeddings batched, long chunks truncated before embed; doc tool still returns full text for UX
 - Session memory: short in-process history keyed by `session_id`
 
+### Observability (optional)
+- OpenTelemetry hooks are wired. To export traces, set:
+  - `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318/v1/traces`
+  - `OTEL_SERVICE_NAME=chatbot-backend`
+  - Run a local collector (e.g., `otel/opentelemetry-collector` Docker image) and view in Jaeger/Tempo.
+
 ---
 
 ### Troubleshooting

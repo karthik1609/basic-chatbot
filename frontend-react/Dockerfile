@@ -18,14 +18,15 @@ ENV PORT=3000
 ENV NEXT_PUBLIC_FASTAPI_EXTERNAL_BASE=${NEXT_PUBLIC_FASTAPI_EXTERNAL_BASE}
 
 # Copy built app and runtime deps
-COPY --from=build /app/node_modules ./node_modules
-COPY --from=build /app/package*.json ./
-COPY --from=build /app/.next ./.next
-COPY --from=build /app/public ./public
+COPY --from=build --chown=node:node /app/node_modules ./node_modules
+COPY --from=build --chown=node:node /app/package*.json ./
+COPY --from=build --chown=node:node /app/.next ./.next
+COPY --from=build --chown=node:node /app/public ./public
 # If you have a next.config.mjs, uncomment the next line to include it
-# COPY --from=build /app/next.config.mjs ./next.config.mjs
+# COPY --from=build --chown=node:node /app/next.config.mjs ./next.config.mjs
 
 EXPOSE 3000
+USER node
 CMD ["npm","run","start","--","-p","3000"]
 
 
