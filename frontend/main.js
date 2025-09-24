@@ -10,9 +10,36 @@ document.addEventListener('DOMContentLoaded', () => {
   const dbSeedBtn = document.getElementById('dbseed');
   const newChatBtn = document.getElementById('newchat');
   const tracePre = document.getElementById('tracePre');
+  const modelProfileEl = document.getElementById('modelProfile');
 
   // Point API calls to the FastAPI backend on port 8000
   const API_BASE = `${window.location.protocol}//${window.location.hostname}:8000`;
+  // Load model profiles
+  async function loadProfiles() {
+    try {
+      const res = await fetch(`${API_BASE}/api/models`);
+      const data = await res.json();
+      const profiles = data.profiles || [];
+      if (modelProfileEl) {
+        modelProfileEl.innerHTML = '';
+        for (const p of profiles) {
+          const opt = document.createElement('option');
+          opt.value = p.id;
+          opt.textContent = `${p.label || p.id}`;
+          modelProfileEl.appendChild(opt);
+        }
+        const saved = localStorage.getItem('model_profile');
+        modelProfileEl.value = saved || data.default || (profiles[0] && profiles[0].id) || '';
+        modelProfileEl.addEventListener('change', () => {
+          localStorage.setItem('model_profile', modelProfileEl.value);
+        });
+      }
+    } catch (e) {
+      console.warn('Failed to load model profiles', e);
+    }
+  }
+  loadProfiles();
+
 
   // UUID fallback for older browsers
   function uuid() {
@@ -83,7 +110,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const res = await fetch(`${API_BASE}/api/agent/chat`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ message, language: languageEl ? languageEl.value : 'en', session_id: sessionId })
+          body: JSON.stringify({ message, language: languageEl ? languageEl.value : 'en', session_id: sessionId, model_profile: modelProfileEl ? modelProfileEl.value : undefined })
         });
         if (!res.ok) {
           const err = await res.json().catch(() => ({}));
@@ -107,7 +134,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const res = await fetch(`${API_BASE}/api/chat`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ message, language: languageEl ? languageEl.value : 'en' })
+          body: JSON.stringify({ message, language: languageEl ? languageEl.value : 'en', model_profile: modelProfileEl ? modelProfileEl.value : undefined })
         });
         if (!res.ok) {
           const err = await res.json().catch(() => ({}));

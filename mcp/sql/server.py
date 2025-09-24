@@ -1,4 +1,10 @@
 import os
+import logging
+logging.basicConfig(
+    level=getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO),
+    format=os.getenv("LOG_FORMAT", "%(asctime)s %(levelname)s [mcp-sql] %(message)s"),
+)
+logger = logging.getLogger("mcp-sql")
 from typing import List, Dict, Any
 
 from mcp.server.fastmcp import FastMCP
@@ -9,6 +15,7 @@ import time
 
 class _HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):  # type: ignore[override]
+        logger.info("healthcheck / called")
         self.send_response(200)
         self.send_header("Content-Type", "text/plain")
         self.end_headers()
@@ -41,9 +48,10 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", "3000"))
     _start_health_http(port)
     try:
+        logger.info("starting SQLServer", extra={"port": port})
         SQLServer().run()
     except Exception:
-        pass
+        logger.exception("SQLServer crashed")
     # Keep the container alive for healthcheck
     while True:
         time.sleep(3600)

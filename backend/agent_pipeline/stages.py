@@ -1,6 +1,6 @@
 from __future__ import annotations
 from typing import Dict, Any, Tuple, List, Optional
-from ..openai_client import get_openai_client
+from ..openai_client import get_openai_client, get_resolved_base_url
 from ..config import settings
 from ..agent_tools import tool_retrieve_docs, tool_sql
 from .types import DocEvidence, ComposerResult, NitpickerResult
@@ -20,6 +20,10 @@ def normalize_input(message: str, lang: str) -> str:
         "- Never drop constraints like 'not closed', 'last 30 days', country names, section numbers (e.g., 2.23).\n"
         "Return only the cleaned text."
     )
+    import logging
+    _logger = logging.getLogger("llm")
+    _base = get_resolved_base_url()
+    _logger.info("llm_request", extra={"base_url": _base, "endpoint": "/chat/completions", "model": settings.chat_model})
     client = get_openai_client()
     completion = client.chat.completions.create(
         model=settings.chat_model,
@@ -38,6 +42,10 @@ def extract_intent_slots(text: str, lang: str) -> Tuple[str, Dict[str, Any]]:
         "- slots: key/value pairs relevant to the task\n"
         "Return JSON only."
     )
+    import logging
+    _logger = logging.getLogger("llm")
+    _base = get_resolved_base_url()
+    _logger.info("llm_request", extra={"base_url": _base, "endpoint": "/chat/completions", "model": settings.chat_model})
     client = get_openai_client()
     completion = client.chat.completions.create(
         model=settings.chat_model,
@@ -102,6 +110,10 @@ def generate_sql(lang: str, intent: str, slots: Dict[str, Any], schema_text: str
         "- Avoid scalar subqueries with multiple columns; use CTEs/window functions if needed.\n"
         "- Return only raw SQL without code fences.\n"
     )
+    import logging
+    _logger = logging.getLogger("llm")
+    _base = get_resolved_base_url()
+    _logger.info("llm_request", extra={"base_url": _base, "endpoint": "/chat/completions", "model": settings.chat_model})
     client = get_openai_client()
     completion = client.chat.completions.create(
         model=settings.chat_model,
@@ -153,6 +165,10 @@ def compose_answer(lang: str, normalized_q: str, slots: Dict[str, Any], docs: Li
         "- For SQL-backed answers, include [S1] in the claim sentence that states the numeric/result.\n"
         "Return JSON with keys: answer, reasoning_bullets (array).\n"
     )
+    import logging
+    _logger = logging.getLogger("llm")
+    _base = get_resolved_base_url()
+    _logger.info("llm_request", extra={"base_url": _base, "endpoint": "/chat/completions", "model": settings.chat_model})
     client = get_openai_client()
     completion = client.chat.completions.create(
         model=settings.chat_model,
@@ -194,6 +210,10 @@ def nitpick_verify(
         "Run multi-pass checks on the draft answer against the provided evidence only.\n"
         "Return strict JSON with keys: compliance_score, findings, patches, revised_answer.\n"
     )
+    import logging
+    _logger = logging.getLogger("llm")
+    _base = get_resolved_base_url()
+    _logger.info("llm_request", extra={"base_url": _base, "endpoint": "/chat/completions", "model": settings.chat_model})
     client = get_openai_client()
     completion = client.chat.completions.create(
         model=settings.chat_model,

@@ -1,9 +1,10 @@
 import logging
 import os
 from typing import Any, Dict, Optional, List, Tuple
+from dataclasses import dataclass, asdict
 
 from openai import OpenAI
-from agents import Agent, Runner, function_tool
+from agents import function_tool
 import json
 from typing import List
 import asyncio
@@ -32,6 +33,20 @@ logger = logging.getLogger("agentic")
 # Simple in-process conversation memory keyed by session_id
 _SESSION_HISTORY: Dict[str, List[Tuple[str, str]]] = {}
 _SESSION_LOCKS: Dict[str, asyncio.Lock] = {}
+
+
+@dataclass
+class PendingTurn:
+    normalized: str
+    intent: str
+    slots: Dict[str, Any]
+    language: str
+    trace: List[Dict[str, Any]]
+    requires_docs: bool
+    requires_sql: bool
+
+
+_SESSION_PENDING: Dict[str, PendingTurn] = {}
 
 
 def _append_history(session_id: Optional[str], role: str, content: str) -> None:
@@ -84,7 +99,7 @@ async def run_agentic_chat(message: str, language: str | None = None, session_id
 async def _run_agentic_chat_inner(message: str, language: str | None = None, session_id: Optional[str] = None) -> Dict[str, Any]:
     # Offline/CI short-circuit: if no real API key, return a deterministic stub
     import os as _os
-    if _os.getenv("OFFLINE_MODE", "") == "1" or (_os.getenv("OPENAI_API_KEY", "").lower() in ("", "dummy")):
+    if _os.getenv("OFFLINE_MODE", "") == "1":
         trace = [{"stage": "offline", "note": "OFFLINE_MODE active; returning stub response"}]
         answer_text = "Offline mode: agent pipeline skipped. Ingest and DB init verified."
         _append_history(session_id, "user", message)
@@ -100,9 +115,30 @@ async def _run_agentic_chat_inner(message: str, language: str | None = None, ses
             "confidence": 0.0,
         }
 
+    # For local-runner, avoid OpenAI telemetry by clearing OPENAI_API_KEY during this request
+    _orig_openai = os.environ.get("OPENAI_API_KEY")
+    _profile_id = settings.current_profile_id.get()
+    if _profile_id == "local-runner":
+        os.environ["OPENAI_API_KEY"] = ""
+
     # Ensure OpenAI client is configured (reads API key / base_url)
     _client: OpenAI = get_openai_client()
     lang = language or "en"
+
+    def _chat_complete(system_instr: str, user_msg: str) -> str:
+        try:
+            client = get_openai_client()
+            completion = client.chat.completions.create(
+                model=settings.chat_model,
+                messages=[
+                    {"role": "system", "content": system_instr},
+                    {"role": "user", "content": user_msg},
+                ],
+            )
+            return completion.choices[0].message.content or ""
+        except Exception as _e:
+            logger.error("llm_complete_error", extra={"error": str(_e)})
+            return ""
 
     # Explicit DB dictionary and guidelines (must mirror backend/db.py)
     db_schema = (
@@ -215,20 +251,13 @@ async def _run_agentic_chat_inner(message: str, language: str | None = None, ses
         + convo_block + db_schema + disambiguation + examples
     )
 
-    # ---- Mini-agent runner for text-only steps ----
-    async def _run_text_agent(name: str, instr: str, user_msg: str) -> str:
-        mini = Agent(name=name, instructions=instr, tools=[])
-        res = await Runner.run(mini, user_msg)
-        return getattr(res, "final_output", "") or ""
-
     async def _run_recovery_agent(stage: str, error: str, normalized_q: str, slots_obj: Dict[str, Any], schema_text: str, constraints_text: str, attempt_num: int) -> Dict[str, Any]:
         instr = (
-            "You are a Recovery Supervisor Agent. Your job is to help other agents recover from failures.\n"
-            "Given the failed stage, the precise error message, the normalized question, slots, schema, and the current constraints,\n"
-            "propose a minimal, safe adjustment that is consistent with the schema and prior guidelines.\n"
-            "Do NOT invent tables or columns. Prefer: simplifying filters, avoiding multi-column scalar subqueries, using CTE/window functions,\n"
-            "and mapping statuses correctly. Suggest constraints or prompt additions only. Respond in strict JSON with keys: \n"
-            "{\"revised_constraints_append\": string, \"revised_prompt_append\": string, \"abort\": boolean}."
+            "You are a Recovery Supervisor Agent. Your job is to help recover from failures.\n"
+            "Given the failed stage, precise error message, normalized question, slots, schema, and current constraints,\n"
+            "propose a minimal, safe adjustment consistent with the schema and prior guidelines.\n"
+            "Do NOT invent tables/columns. Prefer: simplify filters, avoid multi-column scalar subqueries, use CTE/window functions,\n"
+            "map statuses correctly. Respond strict JSON: {\"revised_constraints_append\": string, \"revised_prompt_append\": string, \"abort\": boolean}."
         )
         prompt = (
             f"Stage: {stage}\n"
@@ -239,7 +268,7 @@ async def _run_agentic_chat_inner(message: str, language: str | None = None, ses
             "Schema:\n" + schema_text + "\n\n" +
             "Current constraints:\n" + constraints_text + "\n"
         )
-        raw = await _run_text_agent("RecoverySupervisor", instr, prompt)
+        raw = _chat_complete(instr, prompt)
         try:
             return json.loads(raw)
         except Exception:
@@ -253,32 +282,58 @@ async def _run_agentic_chat_inner(message: str, language: str | None = None, ses
 
     # 1) Input Normalizer
     # Modular stage: normalization via pipeline
-    try:
-        normalized = pipeline_normalize_input(message, lang)
-    except Exception:
-        # fallback to previous mini-agent approach if pipeline fails
-        normalizer_instr = (
-            f"Respond in language code '{lang}'. You normalize user input.\n"
-            "- Fix obvious typos and normalize numbers, dates, and units.\n"
-            "- Remove irrelevant fluff.\n"
-            "- Mask PII: replace emails, phones with placeholders.\n"
-            "Return only the cleaned text."
-        )
-        normalized = await _run_text_agent("InputNormalizer", normalizer_instr, message)
+    # If we have a pending elicitation for this session, resume by combining
+    pending = _SESSION_PENDING.get(session_id or "") if session_id else None
+    if pending is not None:
+        # Seed trace and carry forward language unless overridden
+        lang = language or pending.language or lang
+        trace.extend(pending.trace)
+        trace.append({"stage": "resume", "note": "Resuming after elicitation", "pending_intent": pending.intent})
+        combined = f"{pending.normalized}\n\nUser clarification: {message}"
+        try:
+            normalized = pipeline_normalize_input(combined, lang)
+        except Exception:
+            normalized = combined
+    else:
+        try:
+            normalized = pipeline_normalize_input(message, lang)
+        except Exception:
+            # fallback via profile-aware completion
+            normalizer_instr = (
+                f"Respond in language code '{lang}'. You normalize user input.\n"
+                "- Fix obvious typos and normalize numbers, dates, and units.\n"
+                "- Remove irrelevant fluff.\n"
+                "- Mask PII: replace emails, phones with placeholders.\n"
+                "Return only the cleaned text."
+            )
+            normalized = _chat_complete(normalizer_instr, message)
+    logger.info("stage=normalize", extra={"normalized": normalized[:200]})
     trace.append({"stage": "normalize", "normalized": normalized})
 
     # 2) Intent & Slot Extractor
     # Modular stage: intent & slots
     intent = "other"
     slots: Dict[str, Any] = {}
-    try:
-        intent, slots = pipeline_extract_intent_slots(normalized, lang)
-    except Exception:
-        pass
-    # Heuristic determinations for docs/sql needs based on intent/slots
-    requires_docs = intent in ("policy_question", "doc_lookup")
-    requires_sql = intent in ("sql_analytics",)
+    if pending is not None:
+        # Prefer re-extraction but fall back to pending
+        try:
+            intent, slots = pipeline_extract_intent_slots(normalized, lang)
+        except Exception:
+            intent, slots = pending.intent, pending.slots
+        # Carry forward requires flags unless intent changed materially
+        requires_docs = pending.requires_docs
+        requires_sql = pending.requires_sql
+    else:
+        try:
+            intent, slots = pipeline_extract_intent_slots(normalized, lang)
+        except Exception:
+            pass
+        # Heuristic determinations for docs/sql needs based on intent/slots
+    if pending is None:
+        requires_docs = intent in ("policy_question", "doc_lookup")
+        requires_sql = intent in ("sql_analytics",)
     missing_slots: List[str] = []
+    logger.info("stage=extract", extra={"intent": intent, "requires_docs": requires_docs, "requires_sql": requires_sql})
     trace.append({
         "stage": "extract",
         "intent": intent,
@@ -294,9 +349,22 @@ async def _run_agentic_chat_inner(message: str, language: str | None = None, ses
     if must_ask:
         ask_question = pipeline_generate_elicitation_question(lang, intent, missing_slots, slots)
         decision = "ASK"
+        logger.info("stage=ask", extra={"question": ask_question})
         trace.append({"stage": "ask", "question": ask_question})
-        # Memory update and return early awaiting user reply
+        # Persist pending turn for this session
+        if session_id:
+            _SESSION_PENDING[session_id] = PendingTurn(
+                normalized=normalized,
+                intent=intent,
+                slots=slots,
+                language=lang,
+                trace=trace[:],
+                requires_docs=requires_docs,
+                requires_sql=requires_sql,
+            )
+        # Memory update: append both user turn and the question asked
         _append_history(session_id, "user", message)
+        _append_history(session_id, "assistant", ask_question)
         return {
             "ask": ask_question,
             "trace": trace,
@@ -372,7 +440,7 @@ async def _run_agentic_chat_inner(message: str, language: str | None = None, ses
                 f"Respond in language code '{lang}'. Identify 2-6 distinct answer points or sub-questions present in the user's request.\n"
                 "Return JSON array of short point labels (strings)." 
             )
-            points_raw = await _run_text_agent("PointExtractor", points_instr, normalized)
+            points_raw = _chat_complete(points_instr, normalized)
             try:
                 points: List[str] = json.loads(points_raw)
                 if not isinstance(points, list):
@@ -393,7 +461,7 @@ async def _run_agentic_chat_inner(message: str, language: str | None = None, ses
                 "Points:\n" + json.dumps(points, ensure_ascii=False) + "\n\n" +
                 "Candidates (ID, source, score, text):\n" + cand_block
             )
-            selection_raw = await _run_text_agent("EvidenceSelector", selector_instr, selector_input)
+            selection_raw = _chat_complete(selector_instr, selector_input)
             selected_map: Dict[str, List[str]] = {}
             try:
                 selected_map = json.loads(selection_raw)
@@ -441,6 +509,7 @@ async def _run_agentic_chat_inner(message: str, language: str | None = None, ses
             except Exception:
                 pass
 
+            logger.info("stage=evidence_select", extra={"num_candidates": len(candidates), "selected_counts": {k: len(v or []) for k, v in selected_map.items()}})
             trace.append({"stage": "evidence_select", "points": points, "selected": selected_map})
         except Exception as e:
             trace.append({"stage": "retrieve_docs", "status": "error", "error": str(e)})
@@ -464,13 +533,16 @@ async def _run_agentic_chat_inner(message: str, language: str | None = None, ses
                     candidate_sql = re.sub(r"\(\s*SELECT\s+[^\)]*?,\s*[^\)]*?\)\s+AS", "", candidate_sql)
                 except Exception:
                     pass
+                logger.info("stage=sql_generate", extra={"attempt": attempt})
                 local_sql_rows = _tool_sql(query=candidate_sql)
                 local_sql_query = candidate_sql
                 citations.append({"type": "sql", "tag": "S1", "query": candidate_sql, "rows": len(local_sql_rows)})
+                logger.info("stage=sql_exec", extra={"rows": len(local_sql_rows)})
                 trace.append({"stage": "sql", "attempt": attempt, "query": candidate_sql, "rows": len(local_sql_rows)})
             except Exception as e:
                 tool_error = f"sql_error: {e}"
                 last_error = str(e)
+                logger.error("stage=sql_error", extra={"attempt": attempt, "error": last_error})
                 trace.append({"stage": "sql_error", "attempt": attempt, "error": last_error})
 
         if tool_error is None:
@@ -500,6 +572,7 @@ async def _run_agentic_chat_inner(message: str, language: str | None = None, ses
     sql_preview = None
     if sql_rows:
         sql_preview = json.dumps(sql_rows[:5], ensure_ascii=False)[:800]
+    logger.info("stage=compose", extra={"docs": len(docs_evidence), "has_sql": bool(sql_preview)})
     comp = pipeline_compose_answer(lang, normalized, slots, docs_evidence, sql_preview)
     answer_text = comp.get("answer", "")
     trace.append({"stage": "compose", "reasoning": comp.get("reasoning_bullets", [])})
@@ -552,6 +625,7 @@ async def _run_agentic_chat_inner(message: str, language: str | None = None, ses
         for c in citations:
             if c.get("type") == "doc" and c.get("tag") and c.get("text"):
                 docs_map[str(c["tag"]) ] = str(c.get("text") or "")
+        logger.info("stage=nitpicker_round", extra={"round": round_idx, "docs": len(docs_map)})
         ver = pipeline_nitpick_verify(lang, normalized, answer_text, docs_map, sql_query, sql_rows)
         raw_score = ver.get("compliance_score")
         try:
@@ -590,9 +664,14 @@ async def _run_agentic_chat_inner(message: str, language: str | None = None, ses
     except Exception:
         pass
 
-    # Update memory and return
+    # Update memory and return; clear pending if any
     _append_history(session_id, "user", message)
     _append_history(session_id, "assistant", answer_text)
+    if session_id and session_id in _SESSION_PENDING:
+        try:
+            del _SESSION_PENDING[session_id]
+        except KeyError:
+            pass
 
     return {
         "answer": answer_text,

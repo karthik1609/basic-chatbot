@@ -1,4 +1,5 @@
 import os
+import logging
 from typing import List
 
 import numpy as np
@@ -10,6 +11,11 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import time
 
 load_dotenv()
+logging.basicConfig(
+    level=getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO),
+    format=os.getenv("LOG_FORMAT", "%(asctime)s %(levelname)s [mcp-docs] %(message)s"),
+)
+logger = logging.getLogger("mcp-docs")
 
 DOCS_DIR = os.getenv("CORPUS_DIR", "/srv/corpus")
 
@@ -44,6 +50,7 @@ def chunk(text: str, size: int = 1200, overlap: int = 200) -> List[str]:
 
 class _HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):  # type: ignore[override]
+        logger.info("healthcheck / called")
         self.send_response(200)
         self.send_header("Content-Type", "text/plain")
         self.end_headers()
@@ -75,9 +82,10 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", "3000"))
     _start_health_http(port)
     try:
+        logger.info("starting DocsServer", extra={"port": port})
         DocsServer().run()
     except Exception:
-        pass
+        logger.exception("DocsServer crashed")
     # Keep the container alive for healthcheck
     while True:
         time.sleep(3600)
