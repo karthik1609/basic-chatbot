@@ -12,17 +12,25 @@ except Exception:  # noqa: BLE001
     _FAISS_AVAILABLE = False
 from pypdf import PdfReader
 
-from .config import settings, ensure_data_dirs
+from .config import settings, ensure_data_dirs, get_profile
 from .logging_setup import configure_logging
 from .openai_client import get_openai_client
+from .config import settings
 
 
 configure_logging()
 logger = logging.getLogger("rag")
 
-INDEX_FILE = os.path.join(settings.data_dir, "faiss.index")
-EMBED_FILE = os.path.join(settings.data_dir, "embeddings.npy")
-META_FILE = os.path.join(settings.data_dir, "meta.json")
+def _artifact_paths() -> tuple[str, str, str]:
+    # Use embedding model from the selected profile to namespace artifacts
+    prof = get_profile(None)
+    embed_model = str(prof.get("embedding_model") or settings.embedding_model)
+    # sanitize filename
+    safe = ''.join(ch if ch.isalnum() or ch in ('-', '_') else '_' for ch in embed_model)
+    index_file = os.path.join(settings.data_dir, f"faiss.index.{safe}")
+    embed_file = os.path.join(settings.data_dir, f"embeddings.{safe}.npy")
+    meta_file = os.path.join(settings.data_dir, f"meta.{safe}.json")
+    return index_file, embed_file, meta_file
 
 
 def _read_pdfs_from_directory(directory_path: str) -> List[Tuple[str, str]]:
@@ -147,10 +155,23 @@ def _embed_texts(texts: List[str]) -> np.ndarray:
         return arr
 
     client = get_openai_client()
-    response = client.embeddings.create(
-        model=settings.embedding_model,
-        input=texts,
-    )
+    import logging
+    _logger = logging.getLogger("llm")
+    from .openai_client import get_resolved_base_url
+    _base = get_resolved_base_url()
+    _logger.info("llm_request", extra={"base_url": _base, "endpoint": "/embeddings", "model": (get_profile(None).get("embedding_model") or settings.embedding_model)})
+    # Avoid sending unsupported params for local runner
+    kwargs: Dict[str, Any] = {
+        "model": (get_profile(None).get("embedding_model") or settings.embedding_model),
+        "input": texts,
+    }
+    try:
+        # Some providers support encoding_format; Ollama via LiteLLM does not
+        if os.getenv("EMBEDDINGS_ENCODING_FORMAT"):
+            kwargs["encoding_format"] = os.getenv("EMBEDDINGS_ENCODING_FORMAT")
+    except Exception:
+        pass
+    response = client.embeddings.create(**kwargs)
     vectors = [np.array(item.embedding, dtype=np.float32) for item in response.data]
     return np.vstack(vectors)
 
@@ -178,15 +199,17 @@ def build_or_update_index() -> Dict[str, Any]:
             })
 
     logger.info("Chunking complete", extra={"num_chunks": len(all_chunks)})
+    index_file, embed_file, meta_file = _artifact_paths()
+
     if not all_chunks:
         # Create an empty artifacts set to avoid runtime errors
         if _FAISS_AVAILABLE:
             dim = 3072  # text-embedding-3-large dimension
             index = faiss.IndexFlatIP(dim)
-            faiss.write_index(index, INDEX_FILE)
+            faiss.write_index(index, index_file)
         else:
-            np.save(EMBED_FILE, np.zeros((0, 0), dtype=np.float32))
-        with open(META_FILE, "w", encoding="utf-8") as f:
+            np.save(embed_file, np.zeros((0, 0), dtype=np.float32))
+        with open(meta_file, "w", encoding="utf-8") as f:
             json.dump({"chunks": [], "metadata": []}, f)
         logger.warning("No chunks produced; created empty index")
         return {"chunks": 0}
@@ -195,7 +218,7 @@ def build_or_update_index() -> Dict[str, Any]:
     logger.info("Embeddings created", extra={"shape": list(embeddings.shape)})
 
     # Persist metadata
-    with open(META_FILE, "w", encoding="utf-8") as f:
+    with open(meta_file, "w", encoding="utf-8") as f:
         json.dump({"chunks": all_chunks, "metadata": chunk_metadata}, f)
 
     if _FAISS_AVAILABLE:
@@ -204,37 +227,38 @@ def build_or_update_index() -> Dict[str, Any]:
         dim = embeddings.shape[1]
         index = faiss.IndexFlatIP(dim)
         index.add(embeddings)
-        faiss.write_index(index, INDEX_FILE)
+        faiss.write_index(index, index_file)
         logger.info("FAISS index written", extra={"dim": dim, "num": len(all_chunks)})
     else:
         # Save embeddings for numpy-based retrieval
         # Normalize rows for cosine similarity
         norms = np.linalg.norm(embeddings, axis=1, keepdims=True) + 1e-12
         embeddings = embeddings / norms
-        np.save(EMBED_FILE, embeddings)
+        np.save(embed_file, embeddings)
         logger.info("Embeddings saved for numpy retrieval", extra={"num": len(all_chunks)})
 
     return {"chunks": len(all_chunks)}
 
 
 def _load_index_and_meta():  # type: ignore[no-untyped-def]
-    if not os.path.exists(META_FILE):
+    index_file, embed_file, meta_file = _artifact_paths()
+    if not os.path.exists(meta_file):
         raise FileNotFoundError("Index metadata not found; run /api/ingest first")
-    with open(META_FILE, "r", encoding="utf-8") as f:
+    with open(meta_file, "r", encoding="utf-8") as f:
         meta = json.load(f)
     chunks = meta.get("chunks", [])
     metadata = meta.get("metadata", [])
 
     if _FAISS_AVAILABLE:
-        if not os.path.exists(INDEX_FILE):
+        if not os.path.exists(index_file):
             raise FileNotFoundError("FAISS index not found; run /api/ingest first")
-        index = faiss.read_index(INDEX_FILE)
+        index = faiss.read_index(index_file)
         logger.info("Loaded FAISS index", extra={"num_chunks": len(chunks)})
         return ("faiss", index, chunks, metadata)
     else:
-        if not os.path.exists(EMBED_FILE):
+        if not os.path.exists(embed_file):
             raise FileNotFoundError("Embeddings file not found; run /api/ingest first")
-        embeddings = np.load(EMBED_FILE)
+        embeddings = np.load(embed_file)
         logger.info("Loaded numpy embeddings", extra={"num_chunks": len(chunks)})
         return ("numpy", embeddings, chunks, metadata)
 

@@ -4,7 +4,7 @@ from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 import os
 
-from .config import settings
+from .config import settings, get_profile
 from .rag import build_or_update_index, retrieve_relevant_chunks
 from .openai_client import get_openai_client
 from .logging_setup import configure_logging
@@ -81,9 +81,15 @@ def create_app() -> FastAPI:
         return response
 
     @app.post("/api/ingest", response_model=IngestResponse)
-    def ingest(x_api_key: Optional[str] = Header(default=None)) -> Any:  # noqa: ANN401
+    def ingest(request: Request, x_api_key: Optional[str] = Header(default=None)) -> Any:  # noqa: ANN401
         _require_api_key(x_api_key)
-        logger.info("/api/ingest called")
+        model_profile = request.query_params.get("model_profile")
+        if model_profile:
+            try:
+                settings.current_profile_id.set(model_profile)
+            except Exception:
+                pass
+        logger.info("/api/ingest called", extra={"profile": model_profile})
         result = build_or_update_index()
         logger.info("/api/ingest completed", extra={"chunks_indexed": int(result.get("chunks", 0))})
         return {"chunks_indexed": int(result.get("chunks", 0))}
@@ -92,6 +98,7 @@ def create_app() -> FastAPI:
         message: str
         language: Optional[str] = None  # e.g., "en", "es", "fr"
         top_k: Optional[int] = None
+        model_profile: Optional[str] = None
 
     class ContextItem(BaseModel):
         text: str
@@ -108,6 +115,12 @@ def create_app() -> FastAPI:
         # Default language
         language = req.language or "en"
         logger.info("/api/chat called", extra={"language": language})
+        # Set current model profile for this request
+        if req.model_profile:
+            try:
+                settings.current_profile_id.set(req.model_profile)
+            except Exception:
+                pass
 
         try:
             retrieved = retrieve_relevant_chunks(req.message, top_k=req.top_k)
@@ -201,6 +214,7 @@ def create_app() -> FastAPI:
         message: str
         language: Optional[str] = None
         session_id: Optional[str] = None
+        model_profile: Optional[str] = None
 
     class AgentChatResponse(BaseModel):
         answer: str
@@ -213,8 +227,30 @@ def create_app() -> FastAPI:
     @app.post("/api/agent/chat", response_model=AgentChatResponse)
     async def agent_chat(req: AgentChatRequest, x_api_key: Optional[str] = Header(default=None)) -> Any:  # noqa: ANN401
         _require_api_key(x_api_key)
+        if req.model_profile:
+            try:
+                settings.current_profile_id.set(req.model_profile)
+            except Exception:
+                pass
+        logger.info("/api/agent/chat inbound", extra={"session_id": req.session_id, "lang": req.language, "profile": req.model_profile})
         result = await run_agentic_chat(req.message, req.language, req.session_id)
+        logger.info("/api/agent/chat result", extra={"session_id": result.get("session_id"), "decision": result.get("decision"), "citations": len(result.get("citations") or [])})
         return result
+
+    # Profiles endpoint
+    @app.get("/api/models")
+    def list_models() -> Any:  # noqa: ANN401
+        items = []
+        for pid, mp in (settings.model_profiles or {}).items():
+            items.append({
+                "id": pid,
+                "label": mp.get("label", pid),
+                "chat_model": mp.get("chat_model"),
+                "embedding_model": mp.get("embedding_model"),
+                "requires_api_key": bool(mp.get("api_key_env")),
+                "base_url": mp.get("base_url"),
+            })
+        return {"profiles": items, "default": settings.default_profile_id}
 
     # Mount static frontend last to avoid overshadowing API routes
     from fastapi.staticfiles import StaticFiles  # local import to avoid unused when not mounting

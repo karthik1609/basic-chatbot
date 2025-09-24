@@ -21,10 +21,23 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.app
+      platforms:
+        - linux/amd64
+        - linux/arm64
     image: chatbot-basic-app:local
     working_dir: /app
     environment:
       OPENAI_API_KEY: ${OPENAI_API_KEY}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LOG_JSON: ${LOG_JSON:-1}
+      OPENAI_TELEMETRY_DISABLED: "1"
+      OPENAI_TRACING_DISABLED: "1"
+      # Optional hosted/alt profiles
+      MISTRAL_API_KEY: ${MISTRAL_API_KEY}
+      DEFAULT_MODEL_PROFILE: ${DEFAULT_MODEL_PROFILE:-openai-gpt5}
+      # Optional local model runner profile
+      LOCAL_API_KEY: ${LOCAL_API_KEY}
+      LOCAL_BASE_URL: ${LOCAL_BASE_URL:-http://host.docker.internal:8080/v1}
       DATABASE_URL: postgresql+psycopg://chatbot:chatbot@postgres:5432/chatbot
       DOCS_DIR: /app/docs
       DATA_DIR: /app/data
@@ -43,18 +56,26 @@ services:
     command: ["uv run --python 3.13 python /app/main.py"]
     ports:
       - "8000:8000"
+    models:
+      - chat_local
+      - embed_local
 
   mcp-docs:
     container_name: mcp-docs
     build:
       context: ./mcp/docs
       dockerfile: Dockerfile
+      platforms:
+        - linux/amd64
+        - linux/arm64
     image: chatbot-basic-mcp-docs:local
     working_dir: /srv
     volumes:
       - ./docs:/srv/corpus
     environment:
       CORPUS_DIR: /srv/corpus
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LOG_JSON: ${LOG_JSON:-1}
       UV_LINK_MODE: copy
     entrypoint: ["/bin/sh", "-lc"]
     command: ["uv run --python 3.13 python server.py"]
@@ -71,10 +92,15 @@ services:
     build:
       context: ./mcp/sql
       dockerfile: Dockerfile
+      platforms:
+        - linux/amd64
+        - linux/arm64
     image: chatbot-basic-mcp-sql:local
     working_dir: /srv
     environment:
       DATABASE_URL: postgresql+psycopg://chatbot:chatbot@postgres:5432/chatbot
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LOG_JSON: ${LOG_JSON:-1}
       UV_LINK_MODE: copy
     entrypoint: ["/bin/sh", "-lc"]
     command: ["uv run --python 3.13 python server.py"]
@@ -94,16 +120,27 @@ services:
     build:
       context: ./frontend-react
       dockerfile: Dockerfile
+      platforms:
+        - linux/amd64
+        - linux/arm64
     image: chatbot-basic-frontend:local
     environment:
       NEXT_PUBLIC_FASTAPI_EXTERNAL_BASE: http://host.docker.internal:8000
+      # Expose default locales to the React app (optional)
+      # NEXT_PUBLIC_DEFAULT_LOCALE: ${DEFAULT_LOCALE:-en}
+      # NEXT_PUBLIC_SUPPORTED_LOCALES: ${SUPPORTED_LOCALES:-en,fr,es}
     depends_on:
       app:
         condition: service_started
     ports:
       - "3000:3000"
 
+
 volumes:
   pgdata:
-
+models:
+  chat_local:
+    model: hf.co/microsoft/Phi-3-mini-4k-instruct-gguf
+  embed_local:
+    model: hf.co/nomic-ai/nomic-embed-text-v1.5-GGUF
 

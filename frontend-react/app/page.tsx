@@ -8,7 +8,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Toaster } from '@/components/ui/sonner';
 import { toast } from 'sonner';
-import TraceFlow, { type RFTrace, type RFTraceEntry } from '@/components/trace-flow';
+import TraceFlow, { type RFTrace } from '@/components/trace-flow';
 
 export type Citation = { type: 'doc'|'sql'; tag: string; source?: string; chunk_index?: number; score?: number; rows?: number; query?: string; text?: string };
 
@@ -33,6 +33,13 @@ export default function ChatPage() {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [flowOpenFor, setFlowOpenFor] = useState<string | null>(null);
   const [lang, setLang] = useState<string>('en');
+  const [modelProfile, setModelProfile] = useState<string>('');
+  const [profiles, setProfiles] = useState<Array<{ id: string; label?: string }>>([]);
+  const defaultProfiles: Array<{ id: string; label?: string }> = [
+    { id: 'openai-gpt5', label: 'OpenAI GPT-5' },
+    { id: 'local-runner', label: 'Local Model Runner' },
+    { id: 'mistral-light', label: 'Mistral Small' },
+  ];
 
   const endRef = useRef<HTMLDivElement | null>(null);
   useEffect(()=>{ endRef.current?.scrollIntoView({behavior:'smooth'}); }, [messages]);
@@ -46,17 +53,40 @@ export default function ChatPage() {
     setSessionId(sid);
     const savedLang = window.localStorage.getItem('lang');
     if (savedLang) setLang(savedLang);
-  }, []);
+    (async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/models`);
+        const data = await res.json();
+        type ProfileItem = { id: string; label?: string };
+        const src: unknown = data?.profiles || [];
+        const list: ProfileItem[] = Array.isArray(src)
+          ? (src as Array<Record<string, unknown>>).map((p) => ({ id: String(p.id as string), label: typeof p.label === 'string' ? (p.label as string) : undefined }))
+          : [];
+        setProfiles((list.length ? list : defaultProfiles) as Array<{ id: string; label?: string }>);
+        const saved = window.localStorage.getItem('model_profile');
+        const def = data?.default as string | undefined;
+        const initial = saved || def || ((list.length ? list[0]?.id : defaultProfiles[0].id) || '');
+        setModelProfile(initial);
+      } catch {
+        // graceful fallback: seed with defaults
+        setProfiles(defaultProfiles);
+        const saved = window.localStorage.getItem('model_profile');
+        setModelProfile(saved || defaultProfiles[0].id);
+      }
+    })();
+  }, [API_BASE]);
 
   async function onSubmit(e?: React.FormEvent) {
     e?.preventDefault();
     if (!input.trim() || loading) return;
     const userText = input.trim();
+    console.info('[frontend] send', { lang, modelProfile, hasSession: !!sessionId });
     setInput('');
     setMessages(prev => [...prev, { id: crypto.randomUUID(), role: 'user', content: userText }]);
     setLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/api/agent/chat`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: userText, language: lang, session_id: sessionId }) });
+      const res = await fetch(`${API_BASE}/api/agent/chat`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: userText, language: lang, session_id: sessionId, model_profile: modelProfile || undefined }) });
+      console.info('[frontend] /api/agent/chat status', res.status);
       const data = await res.json();
       if (data.session_id) {
         window.localStorage.setItem('session_id', data.session_id);
@@ -139,9 +169,21 @@ export default function ChatPage() {
               <option value="fr">Français</option>
               <option value="es">Español</option>
             </select>
+            <label className="text-xs opacity-70" htmlFor="model-select">Model</label>
+            <select
+              id="model-select"
+              className="bg-background border border-border rounded px-2 py-1 text-xs"
+              value={modelProfile}
+              onChange={(e)=>{ const v = (e.target as HTMLSelectElement).value; setModelProfile(v); window.localStorage.setItem('model_profile', v); }}
+              disabled={loading}
+            >
+              {(profiles.length ? profiles : defaultProfiles).map(p => (
+                <option key={p.id} value={p.id}>{p.label || p.id}</option>
+              ))}
+            </select>
           </div>
           <div className="flex gap-2">
-            <Button variant="secondary" onClick={async()=>{ try{ toast('Rebuilding index...'); const r=await fetch(`${API_BASE}/api/ingest`,{method:'POST'}); if(!r.ok){ const t=await r.text(); throw new Error(t||`HTTP ${r.status}`);} const d=await r.json(); toast.success(`Indexed ${d.chunks_indexed ?? '?' } chunks`);}catch(e){ const err = e instanceof Error ? e.message : String(e); toast.error(`Ingest failed: ${err}`);} }} disabled={loading}>
+            <Button variant="secondary" onClick={async()=>{ try{ toast('Rebuilding index...'); const url = `${API_BASE}/api/ingest${modelProfile ? `?model_profile=${encodeURIComponent(modelProfile)}` : ''}`; const r=await fetch(url,{method:'POST'}); if(!r.ok){ const t=await r.text(); throw new Error(t||`HTTP ${r.status}`);} const d=await r.json(); toast.success(`Indexed ${d.chunks_indexed ?? '?' } chunks`);}catch(e){ const err = e instanceof Error ? e.message : String(e); toast.error(`Ingest failed: ${err}`);} }} disabled={loading}>
               <Wand2 className="w-4 h-4 mr-1"/> Ingest
             </Button>
             <Button variant="secondary" onClick={async()=>{ try{ toast('Initializing DB...'); const r=await fetch(`${API_BASE}/api/db/init`,{method:'POST'}); if(!r.ok){ const t=await r.text(); throw new Error(t||`HTTP ${r.status}`);} const d=await r.json(); toast.success(`DB init: ${d.status||'ok'}`);}catch(e){ const err = e instanceof Error ? e.message : String(e); toast.error(`Init failed: ${err}`);} }} disabled={loading}>
@@ -181,7 +223,7 @@ export default function ChatPage() {
                     </Button>
                   ) : null}
                 </div>
-                <div className="prose prose-invert max-w-none">
+              <div className="prose prose-invert max-w-none">
                   <Markdown citations={(m.citations || []).map(c => ({ tag: c.tag, text: c.text, query: c.query }))}>{m.content}</Markdown>
                 </div>
               </div>

@@ -4,6 +4,7 @@ import re
 
 from .logging_setup import configure_logging
 from .rag import retrieve_relevant_chunks
+from .config import settings
 from .db import get_engine
 from sqlalchemy.exc import SQLAlchemyError
 
