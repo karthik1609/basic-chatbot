@@ -1,7 +1,7 @@
 from __future__ import annotations
 from typing import Dict, Any, Tuple, List, Optional
 from ..openai_client import get_openai_client, get_resolved_base_url
-from ..config import settings
+from ..config import settings, get_profile
 from ..agent_tools import tool_retrieve_docs, tool_sql
 from .types import DocEvidence, ComposerResult, NitpickerResult
 import re
@@ -23,10 +23,12 @@ def normalize_input(message: str, lang: str) -> str:
     import logging
     _logger = logging.getLogger("llm")
     _base = get_resolved_base_url()
-    _logger.info("llm_request", extra={"base_url": _base, "endpoint": "/chat/completions", "model": settings.chat_model})
+    prof = get_profile(None)
+    chat_model = prof.get("chat_model") or settings.chat_model
+    _logger.info("llm_request", extra={"base_url": _base, "endpoint": "/chat/completions", "model": chat_model})
     client = get_openai_client()
     completion = client.chat.completions.create(
-        model=settings.chat_model,
+        model=chat_model,
         messages=[
             {"role": "system", "content": instr},
             {"role": "user", "content": message},
@@ -45,10 +47,12 @@ def extract_intent_slots(text: str, lang: str) -> Tuple[str, Dict[str, Any]]:
     import logging
     _logger = logging.getLogger("llm")
     _base = get_resolved_base_url()
-    _logger.info("llm_request", extra={"base_url": _base, "endpoint": "/chat/completions", "model": settings.chat_model})
+    prof = get_profile(None)
+    chat_model = prof.get("chat_model") or settings.chat_model
+    _logger.info("llm_request", extra={"base_url": _base, "endpoint": "/chat/completions", "model": chat_model})
     client = get_openai_client()
     completion = client.chat.completions.create(
-        model=settings.chat_model,
+        model=chat_model,
         messages=[
             {"role": "system", "content": instr},
             {"role": "user", "content": text},
@@ -80,9 +84,11 @@ def generate_elicitation_question(lang: str, intent: str, missing_slots: List[st
         "- Batch into one question.\n- Offer options if suitable.\n- Avoid yes/no unless appropriate.\n"
         "Return only the question."
     )
+    prof = get_profile(None)
+    chat_model = prof.get("chat_model") or settings.chat_model
     client = get_openai_client()
     completion = client.chat.completions.create(
-        model=settings.chat_model,
+        model=chat_model,
         messages=[
             {"role": "system", "content": instr},
             {"role": "user", "content": f"Intent: {intent}\nKnown slots: {slots}"},
@@ -113,10 +119,12 @@ def generate_sql(lang: str, intent: str, slots: Dict[str, Any], schema_text: str
     import logging
     _logger = logging.getLogger("llm")
     _base = get_resolved_base_url()
-    _logger.info("llm_request", extra={"base_url": _base, "endpoint": "/chat/completions", "model": settings.chat_model})
+    prof = get_profile(None)
+    chat_model = prof.get("chat_model") or settings.chat_model
+    _logger.info("llm_request", extra={"base_url": _base, "endpoint": "/chat/completions", "model": chat_model})
     client = get_openai_client()
     completion = client.chat.completions.create(
-        model=settings.chat_model,
+        model=chat_model,
         messages=[
             {"role": "system", "content": constraints},
             {"role": "user", "content": f"Task: {intent}\nSlots: {slots}\nSchema:\n{schema_text}"},
@@ -168,10 +176,12 @@ def compose_answer(lang: str, normalized_q: str, slots: Dict[str, Any], docs: Li
     import logging
     _logger = logging.getLogger("llm")
     _base = get_resolved_base_url()
-    _logger.info("llm_request", extra={"base_url": _base, "endpoint": "/chat/completions", "model": settings.chat_model})
+    prof = get_profile(None)
+    chat_model = prof.get("chat_model") or settings.chat_model
+    _logger.info("llm_request", extra={"base_url": _base, "endpoint": "/chat/completions", "model": chat_model})
     client = get_openai_client()
     completion = client.chat.completions.create(
-        model=settings.chat_model,
+        model=chat_model,
         messages=[
             {"role": "system", "content": instr},
             {"role": "user", "content": f"Question: {normalized_q}\nSlots: {slots}\nEvidence:\n{evidence_block}"},
@@ -213,10 +223,12 @@ def nitpick_verify(
     import logging
     _logger = logging.getLogger("llm")
     _base = get_resolved_base_url()
-    _logger.info("llm_request", extra={"base_url": _base, "endpoint": "/chat/completions", "model": settings.chat_model})
+    prof = get_profile(None)
+    chat_model = prof.get("chat_model") or settings.chat_model
+    _logger.info("llm_request", extra={"base_url": _base, "endpoint": "/chat/completions", "model": chat_model})
     client = get_openai_client()
     completion = client.chat.completions.create(
-        model=settings.chat_model,
+        model=chat_model,
         messages=[
             {"role": "system", "content": instr},
             {"role": "user", "content": f"Question:\n{question}\n\nDraft:\n{draft}\n\nDocs:\n{docs_block}{sql_block}"},

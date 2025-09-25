@@ -52,13 +52,11 @@ services:
         condition: service_healthy
       mcp-sql:
         condition: service_healthy
-    entrypoint: ["/bin/sh", "-lc"]
-    command: ["uv run --python 3.13 python /app/main.py"]
+    # Use the image CMD (venv Python 3.12) from Dockerfile
     ports:
       - "8000:8000"
     volumes:
-      # Mount GGUF tokenizer files for exact tokenization (read-only)
-      - ./models:/models:ro
+      - ./models:/models
     models:
       chat_local:
         endpoint_var: CHAT_LOCAL_URL
