@@ -60,12 +60,32 @@ def _init_model_profiles() -> None:
         "base_url": os.getenv("OPENAI_BASE_URL") or None,
         "api_key_env": "OPENAI_API_KEY",
     })
+    _chat_local_model = (
+        os.getenv("CHAT_LOCAL_MODEL")
+        or os.getenv("LOCAL_CHAT_MODEL")
+        or "hf.co/microsoft/phi-3-mini-4k-instruct-gguf"
+    )
+    _embed_local_model = (
+        os.getenv("EMBED_LOCAL_MODEL")
+        or os.getenv("LOCAL_EMBED_MODEL")
+        or "hf.co/nomic-ai/nomic-embed-text-v1.5-gguf"
+    )
+    # Normalize case for runner IDs (runner lists models in lowercase)
+    _chat_local_model = _chat_local_model.lower()
+    _embed_local_model = _embed_local_model.lower()
+
     profiles.setdefault("local-runner", {
         "id": "local-runner",
         "label": "Local Model Runner",
-        "chat_model": os.getenv("LOCAL_CHAT_MODEL", "llama-3.1-8b-instruct-q4"),
-        "embedding_model": os.getenv("LOCAL_EMBED_MODEL", "nomic-embed-text-v1.5"),
-        "base_url": os.getenv("LOCAL_BASE_URL", "http://model-runner:8001/v1"),
+        "chat_model": _chat_local_model,
+        "embedding_model": _embed_local_model,
+        # Prefer Compose-injected URLs; fall back to explicit env, then a sensible default
+        "base_url": (
+            os.getenv("CHAT_LOCAL_URL")
+            or os.getenv("EMBED_LOCAL_URL")
+            or os.getenv("LOCAL_BASE_URL")
+            or "http://model-runner.docker.internal/engines/v1/"
+        ),
         "api_key_env": os.getenv("LOCAL_API_KEY_ENV", "LOCAL_API_KEY"),
     })
     profiles.setdefault("mistral-light", {

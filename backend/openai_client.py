@@ -60,6 +60,30 @@ def get_openai_client(profile_id: str | None = None) -> OpenAI:
     api_key_env = prof.get("api_key_env", "OPENAI_API_KEY")
     api_key = os.getenv(str(api_key_env) or "OPENAI_API_KEY")
     base_url = prof.get("base_url") or os.getenv("OPENAI_BASE_URL")
+    # Emit a structured resolution log so we can see where it's looking for models
+    try:
+        logger.info(
+            "llm_profile_resolve",
+            extra={
+                "profile": prof.get("id"),
+                "resolved_base_url": base_url or "<default https://api.openai.com/v1>",
+                "chat_model": prof.get("chat_model"),
+                "embedding_model": prof.get("embedding_model"),
+                "env": {
+                    "CHAT_LOCAL_URL": os.getenv("CHAT_LOCAL_URL"),
+                    "EMBED_LOCAL_URL": os.getenv("EMBED_LOCAL_URL"),
+                    "LOCAL_BASE_URL": os.getenv("LOCAL_BASE_URL"),
+                    "OPENAI_BASE_URL": os.getenv("OPENAI_BASE_URL"),
+                    "CHAT_LOCAL_MODEL": os.getenv("CHAT_LOCAL_MODEL"),
+                    "EMBED_LOCAL_MODEL": os.getenv("EMBED_LOCAL_MODEL"),
+                    "LOCAL_CHAT_MODEL": os.getenv("LOCAL_CHAT_MODEL"),
+                    "LOCAL_EMBED_MODEL": os.getenv("LOCAL_EMBED_MODEL"),
+                    "API_KEY_ENV": api_key_env,
+                },
+            },
+        )
+    except Exception:
+        pass
     # Allow local-runner without a key (for unsecured local proxies)
     if str(prof.get("id")) == "local-runner":
         # Ensure no hosted telemetry uses a real key; LiteLLM proxy accepts any Bearer if configured

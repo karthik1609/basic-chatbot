@@ -159,7 +159,20 @@ def _embed_texts(texts: List[str]) -> np.ndarray:
     _logger = logging.getLogger("llm")
     from .openai_client import get_resolved_base_url
     _base = get_resolved_base_url()
-    _logger.info("llm_request", extra={"base_url": _base, "endpoint": "/embeddings", "model": (get_profile(None).get("embedding_model") or settings.embedding_model)})
+    _logger.info(
+        "llm_request",
+        extra={
+            "base_url": _base,
+            "endpoint": "/embeddings",
+            "model": (get_profile(None).get("embedding_model") or settings.embedding_model),
+            "compose_injected": {
+                "CHAT_LOCAL_URL": os.getenv("CHAT_LOCAL_URL"),
+                "EMBED_LOCAL_URL": os.getenv("EMBED_LOCAL_URL"),
+                "CHAT_LOCAL_MODEL": os.getenv("CHAT_LOCAL_MODEL"),
+                "EMBED_LOCAL_MODEL": os.getenv("EMBED_LOCAL_MODEL"),
+            },
+        },
+    )
     # Avoid sending unsupported params for local runner
     kwargs: Dict[str, Any] = {
         "model": (get_profile(None).get("embedding_model") or settings.embedding_model),

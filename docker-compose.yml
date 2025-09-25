@@ -28,7 +28,7 @@ services:
     working_dir: /app
     environment:
       OPENAI_API_KEY: ${OPENAI_API_KEY}
-      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LOG_LEVEL: ${LOG_LEVEL:-DEBUG}
       LOG_JSON: ${LOG_JSON:-1}
       OPENAI_TELEMETRY_DISABLED: "1"
       OPENAI_TRACING_DISABLED: "1"
@@ -56,9 +56,15 @@ services:
     command: ["uv run --python 3.13 python /app/main.py"]
     ports:
       - "8000:8000"
+    extra_hosts:
+      - "model-runner.docker.internal:host-gateway"
     models:
-      - chat_local
-      - embed_local
+      chat_local:
+        endpoint_var: CHAT_LOCAL_URL
+        model_var: CHAT_LOCAL_MODEL
+      embed_local:
+        endpoint_var: EMBED_LOCAL_URL
+        model_var: EMBED_LOCAL_MODEL
 
   mcp-docs:
     container_name: mcp-docs
@@ -74,7 +80,7 @@ services:
       - ./docs:/srv/corpus
     environment:
       CORPUS_DIR: /srv/corpus
-      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LOG_LEVEL: ${LOG_LEVEL:-DEBUG}
       LOG_JSON: ${LOG_JSON:-1}
       UV_LINK_MODE: copy
     entrypoint: ["/bin/sh", "-lc"]
@@ -99,7 +105,7 @@ services:
     working_dir: /srv
     environment:
       DATABASE_URL: postgresql+psycopg://chatbot:chatbot@postgres:5432/chatbot
-      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LOG_LEVEL: ${LOG_LEVEL:-DEBUG}
       LOG_JSON: ${LOG_JSON:-1}
       UV_LINK_MODE: copy
     entrypoint: ["/bin/sh", "-lc"]
@@ -141,6 +147,13 @@ volumes:
 models:
   chat_local:
     model: hf.co/microsoft/Phi-3-mini-4k-instruct-gguf
+    context_size: 4096
+    runtime_flags:
+      - "--verbose"
+      - "--verbose-prompt"
+      - "--log-prefix"
+      - "--log-timestamps"
+      - "--log-colors"
   embed_local:
     model: hf.co/nomic-ai/nomic-embed-text-v1.5-GGUF
 
