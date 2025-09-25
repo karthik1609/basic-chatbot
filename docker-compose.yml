@@ -56,8 +56,9 @@ services:
     command: ["uv run --python 3.13 python /app/main.py"]
     ports:
       - "8000:8000"
-    extra_hosts:
-      - "model-runner.docker.internal:host-gateway"
+    volumes:
+      # Mount GGUF tokenizer files for exact tokenization (read-only)
+      - ./models:/models:ro
     models:
       chat_local:
         endpoint_var: CHAT_LOCAL_URL

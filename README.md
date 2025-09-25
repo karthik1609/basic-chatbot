@@ -16,28 +16,44 @@
 1) Prereqs: Docker Desktop 4.29+, Node 20+, Make (optional)
 2) Configure environment
 
-- Create `.env` in repo root:
+- Create `.env` in repo root (example):
 
 ```
 OPENAI_API_KEY=sk-...
-# Optional overrides
-OPENAI_BASE_URL=
-CHAT_MODEL=gpt-5
-EMBEDDING_MODEL=text-embedding-3-large
+# Profiles
+DEFAULT_MODEL_PROFILE=local-runner
+
+# Exact tokenizer hook (GGUF via llama.cpp)
+TOKEN_LEN_HOOK=backend.token_len_hook:token_len
+# Path inside container to the GGUF (provided by ./models volume)
+LLAMA_GGUF_PATH=/models/nomic-embed-text-v1.5-gguf.gguf
+
+# Embedding/Chunking
+EMBEDDING_MAX_TOKENS=2048
+EMBEDDING_PROMPT_OVERHEAD=0
+CHUNK_TOKEN_BUDGET=1024
+EMBEDDING_BATCH_SIZE=16
+RETRIEVAL_EXPAND_NEIGHBORS=1
+# Leave blank for local runner (not supported)
+EMBEDDINGS_ENCODING_FORMAT=
 ```
 
-3) Build and run
+3) Place model files
+
+- Create a local `./models` directory and place the GGUF tokenizer file used by the embedding model there, e.g. `nomic-embed-text-v1.5-gguf.gguf`. The compose file mounts `./models` into the app container at `/models`.
+
+4) Build and run
 
 ```
 COMPOSE_BAKE=true docker compose up -d --build --force-recreate
 ```
 
-4) Open the app
+5) Open the app
 
 - Frontend (Next.js): http://localhost:3000
 - Backend (FastAPI): http://localhost:8000
 
-5) From the UI
+6) From the UI
 
 - Ingest PDFs: Ingest → indexes `docs/*.pdf` into FAISS
 - Init DB: creates schema
@@ -223,7 +239,9 @@ sequenceDiagram
 
 - Frontend build warnings (unused vars in API routes) are safe; strict `any` is removed in components
 - If frontend can’t reach backend in Docker, ensure `NEXT_PUBLIC_FASTAPI_EXTERNAL_BASE` resolves to FastAPI from the browser (macOS: `http://host.docker.internal:8000`)
-- If embeddings fail with context length, confirm PDFs aren’t gigantic and re-run Ingest
+- If embeddings fail with context length:
+  - Ensure TOKEN_LEN_HOOK and LLAMA_GGUF_PATH are set; `./models` is mounted; logs show token stats
+  - The chunker is token-budgeted (no truncation). Adjust CHUNK_TOKEN_BUDGET if needed
 
 ---
 
