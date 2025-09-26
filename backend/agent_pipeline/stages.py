@@ -40,9 +40,10 @@ def normalize_input(message: str, lang: str) -> str:
 def extract_intent_slots(text: str, lang: str) -> Tuple[str, Dict[str, Any]]:
     instr = (
         f"Respond in language code '{lang}'. Extract task intent and slots as compact JSON.\n"
-        "- intents: one of ['policy_question','sql_analytics','doc_lookup','small_talk','other']\n"
-        "- slots: key/value pairs relevant to the task\n"
-        "Return JSON only."
+        "- Prefer intents in this taxonomy when possible: ['policy_question','sql_analytics','doc_lookup','small_talk','other']\n"
+        "- If you believe a different label is more accurate, you MAY return a free-form intent string.\n"
+        "- slots: key/value pairs relevant to the task (dates, parties, ids, sections).\n"
+        "Return strict JSON: {\"intent\": string, \"slots\": object}."
     )
     import logging
     _logger = logging.getLogger("llm")
@@ -67,6 +68,20 @@ def extract_intent_slots(text: str, lang: str) -> Tuple[str, Dict[str, Any]]:
         slots = j.get("slots", {}) or {}
     except Exception:
         pass
+    # Map unknown/free-form intents to our operational set using lightweight heuristics
+    allowed = {"policy_question", "sql_analytics", "doc_lookup", "small_talk", "other"}
+    if intent not in allowed:
+        low = (text or "").lower()
+        if any(k in low for k in ["select ", " from ", "count(", "sum(", "avg(", "sql", "query"]):
+            intent = "sql_analytics"
+        elif any(k in low for k in ["policy", "coverage", "authorization", "authorisation", "deadline", "garage", "claim", "section", "clause"]):
+            intent = "policy_question"
+        elif any(k in low for k in ["where in", "which section", "in the pdf", "document says", "find in pdf"]):
+            intent = "doc_lookup"
+        elif any(k in low for k in ["hi", "hello", "hey", "how are you"]):
+            intent = "small_talk"
+        else:
+            intent = "other"
     return intent, slots
 
 

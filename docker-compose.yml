@@ -145,7 +145,8 @@ volumes:
   pgdata:
 models:
   chat_local:
-    model: hf.co/microsoft/Phi-3-mini-4k-instruct-gguf
+    # model: hf.co/microsoft/Phi-3-mini-4k-instruct-gguf
+    model: hf.co/microsoft/bitnet-b1.58-2B-4T-gguf
     context_size: 4096
     runtime_flags:
       - "--verbose"

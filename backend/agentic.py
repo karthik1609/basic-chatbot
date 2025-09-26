@@ -332,6 +332,27 @@ async def _run_agentic_chat_inner(message: str, language: str | None = None, ses
     if pending is None:
         requires_docs = intent in ("policy_question", "doc_lookup")
         requires_sql = intent in ("sql_analytics",)
+        # Heuristic upgrade: policy-like questions should consult docs even if intent misclassified
+        low_norm = (normalized or "").lower()
+        policy_kws = [
+            "policy", "coverage", "authorization", "authorisation", "authorization number",
+            "prior authorization", "garage", "report deadline", "deadline", "claim"
+        ]
+        if not requires_docs and any(k in low_norm for k in policy_kws):
+            requires_docs = True
+        # Cheap retrieval probe to flip on docs if there is relevant context
+        if not requires_docs:
+            try:
+                probe = _tool_retrieve_docs(query=normalized, top_k=3)
+                for r in probe or []:
+                    try:
+                        if float(r.get("score") or 0.0) >= float(settings.min_context_similarity):
+                            requires_docs = True
+                            break
+                    except Exception:
+                        continue
+            except Exception:
+                pass
     missing_slots: List[str] = []
     logger.info("stage=extract", extra={"intent": intent, "requires_docs": requires_docs, "requires_sql": requires_sql})
     trace.append({
@@ -575,6 +596,13 @@ async def _run_agentic_chat_inner(message: str, language: str | None = None, ses
     logger.info("stage=compose", extra={"docs": len(docs_evidence), "has_sql": bool(sql_preview)})
     comp = pipeline_compose_answer(lang, normalized, slots, docs_evidence, sql_preview)
     answer_text = comp.get("answer", "")
+    # If we produced an answer without any evidence, strip any hallucinated [D#]/[S#] tokens
+    if not docs_evidence and not sql_rows and answer_text:
+        try:
+            import re as _re
+            answer_text = _re.sub(r"\s*\[(?:D|S)\d+[^\]]*\]", "", answer_text)
+        except Exception:
+            pass
     trace.append({"stage": "compose", "reasoning": comp.get("reasoning_bullets", [])})
 
     # Enforce citation hygiene: ensure each non-empty line has [D#] and/or [S#] if evidence was used
@@ -620,7 +648,9 @@ async def _run_agentic_chat_inner(message: str, language: str | None = None, ses
     # 5.5) Nitpicker Verifier (multi-pass, recursive) — modular
     nitpicker_rounds: List[Dict[str, Any]] = []
     threshold = 90
-    for round_idx in range(1, 4):
+    # Only run nitpicker if there is evidence (docs and/or SQL)
+    if docs_evidence or sql_query:
+        for round_idx in range(1, 4):
         docs_map = {}
         for c in citations:
             if c.get("type") == "doc" and c.get("tag") and c.get("text"):
@@ -636,8 +666,8 @@ async def _run_agentic_chat_inner(message: str, language: str | None = None, ses
         if 0.0 <= score <= 1.0:
             score = score * 100.0
         nitpicker_rounds.append({"round": round_idx, "score": score, "findings": ver.get("findings", [])})
-        if score >= threshold:
-            break
+            if score >= threshold:
+                break
         revised = ver.get("revised_answer")
         patches = ver.get("patches")
         # If a revised answer is provided, prefer it; else, re-compose with constraints
@@ -646,9 +676,8 @@ async def _run_agentic_chat_inner(message: str, language: str | None = None, ses
         else:
             comp2 = pipeline_compose_answer(lang, normalized, slots, docs_evidence, sql_preview)
             answer_text = comp2.get("answer", answer_text)
-
-    if nitpicker_rounds:
-        trace.append({"stage": "nitpicker", "rounds": nitpicker_rounds})
+        if nitpicker_rounds:
+            trace.append({"stage": "nitpicker", "rounds": nitpicker_rounds})
 
     # 6) Validator/Guardrails (lightweight)
     # Basic heuristic: ensure we didn't answer without any evidence when docs/sql were required
