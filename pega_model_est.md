@@ -1,5 +1,4 @@
 ```mermaid
-```mermaid
 flowchart LR
     A[End user\n(Customer/Agent/Dev)] -->|asks question / triggers case| B[Pega App (UI/Case)]
     B --> C[Pega GenAI Orchestrator]
