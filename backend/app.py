@@ -1,10 +1,11 @@
 from fastapi import FastAPI, HTTPException, Header, Request
+from fastapi import UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 import os
 
-from .config import settings, get_profile
+from .config import settings
 from .rag import build_or_update_index, retrieve_relevant_chunks
 from .openai_client import get_openai_client
 from .logging_setup import configure_logging
@@ -81,24 +82,38 @@ def create_app() -> FastAPI:
         return response
 
     @app.post("/api/ingest", response_model=IngestResponse)
-    def ingest(request: Request, x_api_key: Optional[str] = Header(default=None)) -> Any:  # noqa: ANN401
+    def ingest(x_api_key: Optional[str] = Header(default=None)) -> Any:  # noqa: ANN401
         _require_api_key(x_api_key)
-        model_profile = request.query_params.get("model_profile")
-        if model_profile:
-            try:
-                settings.current_profile_id.set(model_profile)
-            except Exception:
-                pass
-        logger.info("/api/ingest called", extra={"profile": model_profile})
+        logger.info("/api/ingest called")
         result = build_or_update_index()
         logger.info("/api/ingest completed", extra={"chunks_indexed": int(result.get("chunks", 0))})
         return {"chunks_indexed": int(result.get("chunks", 0))}
+
+    @app.post("/api/docs/upload")
+    async def upload_pdf(file: UploadFile = File(...), x_api_key: Optional[str] = Header(default=None)) -> Any:  # noqa: ANN401
+        _require_api_key(x_api_key)
+        if not file.filename or not file.filename.lower().endswith(".pdf"):
+            raise HTTPException(status_code=400, detail="Only .pdf files are accepted")
+        # Ensure docs directory exists
+        from .config import settings, ensure_data_dirs
+        ensure_data_dirs()
+        import os
+        safe_name = os.path.basename(file.filename)
+        dest_path = os.path.join(settings.docs_dir, safe_name)
+        try:
+            content = await file.read()
+            with open(dest_path, "wb") as f:
+                f.write(content)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=500, detail=f"Failed to save file: {exc}") from exc
+        # Trigger re-ingest
+        result = build_or_update_index()
+        return {"status": "ok", "saved": safe_name, "chunks_indexed": int(result.get("chunks", 0))}
 
     class ChatRequest(BaseModel):
         message: str
         language: Optional[str] = None  # e.g., "en", "es", "fr"
         top_k: Optional[int] = None
-        model_profile: Optional[str] = None
 
     class ContextItem(BaseModel):
         text: str
@@ -115,12 +130,6 @@ def create_app() -> FastAPI:
         # Default language
         language = req.language or "en"
         logger.info("/api/chat called", extra={"language": language})
-        # Set current model profile for this request
-        if req.model_profile:
-            try:
-                settings.current_profile_id.set(req.model_profile)
-            except Exception:
-                pass
 
         try:
             retrieved = retrieve_relevant_chunks(req.message, top_k=req.top_k)
@@ -209,12 +218,46 @@ def create_app() -> FastAPI:
         seed_data()
         return {"status": "ok"}
 
+    # Bootstrap at startup: init DB, seed, ingest
+    @app.on_event("startup")
+    async def _bootstrap_startup() -> None:
+        # Allow disabling via env if needed
+        if os.getenv("AUTO_BOOTSTRAP", "1") not in ("1", "true", "True"):  # pragma: no cover
+            return
+        try:
+            logger.info("Startup bootstrap: initializing database")
+            # Prefer Alembic
+            try:
+                import subprocess, sys
+                env = dict(os.environ)
+                env["DB_URL"] = env.get("DATABASE_URL", "postgresql+psycopg://chatbot:chatbot@localhost:5432/chatbot")
+                subprocess.run([sys.executable, "-m", "alembic", "upgrade", "head"], check=True, env=env, cwd=os.path.dirname(os.path.dirname(__file__)))
+                logger.info("Database initialized via Alembic")
+            except Exception:
+                init_schema()
+                logger.info("Database initialized via raw SQL")
+
+            logger.info("Startup bootstrap: seeding database")
+            try:
+                seed_data()
+            except Exception:
+                logger.exception("Startup bootstrap: seeding failed")
+
+            logger.info("Startup bootstrap: ensuring docs/data and building index")
+            try:
+                from .config import ensure_data_dirs
+                ensure_data_dirs()
+                build_or_update_index()
+            except Exception:
+                logger.exception("Startup bootstrap: ingestion failed")
+        except Exception:
+            logger.exception("Startup bootstrap encountered an unexpected error")
+
     # Agentic endpoint
     class AgentChatRequest(BaseModel):
         message: str
         language: Optional[str] = None
         session_id: Optional[str] = None
-        model_profile: Optional[str] = None
 
     class AgentChatResponse(BaseModel):
         answer: str
@@ -227,30 +270,8 @@ def create_app() -> FastAPI:
     @app.post("/api/agent/chat", response_model=AgentChatResponse)
     async def agent_chat(req: AgentChatRequest, x_api_key: Optional[str] = Header(default=None)) -> Any:  # noqa: ANN401
         _require_api_key(x_api_key)
-        if req.model_profile:
-            try:
-                settings.current_profile_id.set(req.model_profile)
-            except Exception:
-                pass
-        logger.info("/api/agent/chat inbound", extra={"session_id": req.session_id, "lang": req.language, "profile": req.model_profile})
         result = await run_agentic_chat(req.message, req.language, req.session_id)
-        logger.info("/api/agent/chat result", extra={"session_id": result.get("session_id"), "decision": result.get("decision"), "citations": len(result.get("citations") or [])})
         return result
-
-    # Profiles endpoint
-    @app.get("/api/models")
-    def list_models() -> Any:  # noqa: ANN401
-        items = []
-        for pid, mp in (settings.model_profiles or {}).items():
-            items.append({
-                "id": pid,
-                "label": mp.get("label", pid),
-                "chat_model": mp.get("chat_model"),
-                "embedding_model": mp.get("embedding_model"),
-                "requires_api_key": bool(mp.get("api_key_env")),
-                "base_url": mp.get("base_url"),
-            })
-        return {"profiles": items, "default": settings.default_profile_id}
 
     # Mount static frontend last to avoid overshadowing API routes
     from fastapi.staticfiles import StaticFiles  # local import to avoid unused when not mounting
