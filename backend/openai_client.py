@@ -55,11 +55,31 @@ def _httpx_with_logging() -> httpx.Client:
     return httpx.Client(event_hooks={"response": [_log_response]})
 
 
+def _build_client(api_key: str | None, base_url: str | None) -> OpenAI:
+    if not api_key:
+        raise RuntimeError("API key not set in environment for selected profile")
+    if base_url:
+        logger.info("Creating OpenAI client with base URL", extra={"base_url": base_url})
+        return OpenAI(api_key=api_key, base_url=base_url, http_client=_httpx_with_logging())
+    logger.info("Creating OpenAI client (default base)")
+    return OpenAI(api_key=api_key, http_client=_httpx_with_logging())
+
+
 def get_openai_client(profile_id: str | None = None) -> OpenAI:
+    # Back-compat: default to chat client behavior
+    return get_openai_chat_client(profile_id)
+
+
+def get_openai_chat_client(profile_id: str | None = None) -> OpenAI:
     prof = get_profile(profile_id)
     api_key_env = prof.get("api_key_env", "OPENAI_API_KEY")
     api_key = os.getenv(str(api_key_env) or "OPENAI_API_KEY")
-    base_url = prof.get("base_url") or os.getenv("OPENAI_BASE_URL")
+    # Prefer DMR-injected CHAT_LOCAL_URL for local-runner, else profile/base env
+    base_url = None
+    if str(prof.get("id")) == "local-runner":
+        base_url = os.getenv("CHAT_LOCAL_URL") or os.getenv("LOCAL_BASE_URL")
+    if not base_url:
+        base_url = prof.get("base_url") or os.getenv("OPENAI_BASE_URL")
     # Emit a structured resolution log so we can see where it's looking for models
     try:
         logger.info(
@@ -86,24 +106,65 @@ def get_openai_client(profile_id: str | None = None) -> OpenAI:
         pass
     # Allow local-runner without a key (for unsecured local proxies)
     if str(prof.get("id")) == "local-runner":
-        # Ensure no hosted telemetry uses a real key; LiteLLM proxy accepts any Bearer if configured
         api_key = api_key or "local"
     if not api_key:
         logger.error("API key not set for profile", extra={"profile": prof.get("id")})
         raise RuntimeError("API key not set in environment for selected profile")
-    if base_url:
-        logger.info("Creating OpenAI client with base URL", extra={"base_url": base_url, "profile": prof.get("id")})
-        return OpenAI(api_key=api_key, base_url=base_url, http_client=_httpx_with_logging())
-    logger.info("Creating OpenAI client (default base)", extra={"profile": prof.get("id")})
-    return OpenAI(api_key=api_key, http_client=_httpx_with_logging())
+    return _build_client(api_key, base_url)
 
 
-def get_resolved_base_url(profile_id: str | None = None) -> str:
-    """Return the resolved base URL the OpenAI client will hit for this profile."""
+def get_openai_embed_client(profile_id: str | None = None) -> OpenAI:
     prof = get_profile(profile_id)
+    api_key_env = prof.get("api_key_env", "OPENAI_API_KEY")
+    api_key = os.getenv(str(api_key_env) or "OPENAI_API_KEY")
+    # Prefer DMR-injected EMBED_LOCAL_URL for local-runner, else profile/base env
+    base_url = None
+    if str(prof.get("id")) == "local-runner":
+        base_url = os.getenv("EMBED_LOCAL_URL") or os.getenv("LOCAL_BASE_URL")
+    if not base_url:
+        base_url = prof.get("base_url") or os.getenv("OPENAI_BASE_URL")
+    try:
+        logger.info(
+            "llm_profile_resolve",
+            extra={
+                "profile": prof.get("id"),
+                "resolved_base_url": base_url or "<default https://api.openai.com/v1>",
+                "embedding_model": prof.get("embedding_model"),
+                "env": {
+                    "EMBED_LOCAL_URL": os.getenv("EMBED_LOCAL_URL"),
+                    "LOCAL_BASE_URL": os.getenv("LOCAL_BASE_URL"),
+                    "OPENAI_BASE_URL": os.getenv("OPENAI_BASE_URL"),
+                    "EMBED_LOCAL_MODEL": os.getenv("EMBED_LOCAL_MODEL"),
+                },
+            },
+        )
+    except Exception:
+        pass
+    if str(prof.get("id")) == "local-runner":
+        api_key = api_key or "local"
+    if not api_key:
+        logger.error("API key not set for profile", extra={"profile": prof.get("id")})
+        raise RuntimeError("API key not set in environment for selected profile")
+    return _build_client(api_key, base_url)
+
+
+def get_resolved_chat_base_url(profile_id: str | None = None) -> str:
+    prof = get_profile(profile_id)
+    if str(prof.get("id")) == "local-runner":
+        url = os.getenv("CHAT_LOCAL_URL") or os.getenv("LOCAL_BASE_URL")
+        if url:
+            return str(url)
     base_url = prof.get("base_url") or os.getenv("OPENAI_BASE_URL")
-    if base_url:
-        return str(base_url)
-    return "https://api.openai.com/v1"
+    return str(base_url or "https://api.openai.com/v1")
+
+
+def get_resolved_embed_base_url(profile_id: str | None = None) -> str:
+    prof = get_profile(profile_id)
+    if str(prof.get("id")) == "local-runner":
+        url = os.getenv("EMBED_LOCAL_URL") or os.getenv("LOCAL_BASE_URL")
+        if url:
+            return str(url)
+    base_url = prof.get("base_url") or os.getenv("OPENAI_BASE_URL")
+    return str(base_url or "https://api.openai.com/v1")
 
 

@@ -37,7 +37,11 @@ services:
       DEFAULT_MODEL_PROFILE: ${DEFAULT_MODEL_PROFILE:-openai-gpt5}
       # Optional local model runner profile
       LOCAL_API_KEY: ${LOCAL_API_KEY}
-      LOCAL_BASE_URL: ${LOCAL_BASE_URL:-http://host.docker.internal:8080/v1}
+      # DMR will inject CHAT_LOCAL_URL and EMBED_LOCAL_URL for local-runner
+      LOCAL_BASE_URL: ${LOCAL_BASE_URL}
+      # Provide default model names to avoid quoting issues and NotFound
+      CHAT_LOCAL_MODEL: ${CHAT_LOCAL_MODEL:-gpt-4o-mini}
+      EMBED_LOCAL_MODEL: ${EMBED_LOCAL_MODEL:-nomic-embed-text-v1.5}
       DATABASE_URL: postgresql+psycopg://chatbot:chatbot@postgres:5432/chatbot
       DOCS_DIR: /app/docs
       DATA_DIR: /app/data

@@ -14,7 +14,7 @@ from pypdf import PdfReader
 
 from .config import settings, ensure_data_dirs, get_profile
 from .logging_setup import configure_logging
-from .openai_client import get_openai_client
+from .openai_client import get_openai_embed_client, get_resolved_embed_base_url
 from .config import settings
 
 
@@ -174,11 +174,10 @@ def _embed_texts(texts: List[str]) -> np.ndarray:
             arr[i] = v
         return arr
 
-    client = get_openai_client()
+    client = get_openai_embed_client()
     import logging
     _logger = logging.getLogger("llm")
-    from .openai_client import get_resolved_base_url
-    _base = get_resolved_base_url()
+    _base = get_resolved_embed_base_url()
     profile = get_profile(None)
     model_id = str(profile.get("embedding_model") or settings.embedding_model)
 

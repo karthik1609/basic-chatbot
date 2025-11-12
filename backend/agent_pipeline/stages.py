@@ -1,6 +1,9 @@
 from __future__ import annotations
 from typing import Dict, Any, Tuple, List, Optional
-from ..openai_client import get_openai_client, get_resolved_base_url
+from ..openai_client import (
+    get_openai_chat_client,
+    get_resolved_chat_base_url,
+)
 from ..config import settings, get_profile
 from ..agent_tools import tool_retrieve_docs, tool_sql
 from .types import DocEvidence, ComposerResult, NitpickerResult
@@ -22,11 +25,11 @@ def normalize_input(message: str, lang: str) -> str:
     )
     import logging
     _logger = logging.getLogger("llm")
-    _base = get_resolved_base_url()
+    _base = get_resolved_chat_base_url()
     prof = get_profile(None)
     chat_model = prof.get("chat_model") or settings.chat_model
     _logger.info("llm_request", extra={"base_url": _base, "endpoint": "/chat/completions", "model": chat_model})
-    client = get_openai_client()
+    client = get_openai_chat_client()
     completion = client.chat.completions.create(
         model=chat_model,
         messages=[
@@ -47,11 +50,11 @@ def extract_intent_slots(text: str, lang: str) -> Tuple[str, Dict[str, Any]]:
     )
     import logging
     _logger = logging.getLogger("llm")
-    _base = get_resolved_base_url()
+    _base = get_resolved_chat_base_url()
     prof = get_profile(None)
     chat_model = prof.get("chat_model") or settings.chat_model
     _logger.info("llm_request", extra={"base_url": _base, "endpoint": "/chat/completions", "model": chat_model})
-    client = get_openai_client()
+    client = get_openai_chat_client()
     completion = client.chat.completions.create(
         model=chat_model,
         messages=[
@@ -101,7 +104,7 @@ def generate_elicitation_question(lang: str, intent: str, missing_slots: List[st
     )
     prof = get_profile(None)
     chat_model = prof.get("chat_model") or settings.chat_model
-    client = get_openai_client()
+    client = get_openai_chat_client()
     completion = client.chat.completions.create(
         model=chat_model,
         messages=[
@@ -133,11 +136,11 @@ def generate_sql(lang: str, intent: str, slots: Dict[str, Any], schema_text: str
     )
     import logging
     _logger = logging.getLogger("llm")
-    _base = get_resolved_base_url()
+    _base = get_resolved_chat_base_url()
     prof = get_profile(None)
     chat_model = prof.get("chat_model") or settings.chat_model
     _logger.info("llm_request", extra={"base_url": _base, "endpoint": "/chat/completions", "model": chat_model})
-    client = get_openai_client()
+    client = get_openai_chat_client()
     completion = client.chat.completions.create(
         model=chat_model,
         messages=[
@@ -190,11 +193,11 @@ def compose_answer(lang: str, normalized_q: str, slots: Dict[str, Any], docs: Li
     )
     import logging
     _logger = logging.getLogger("llm")
-    _base = get_resolved_base_url()
+    _base = get_resolved_chat_base_url()
     prof = get_profile(None)
     chat_model = prof.get("chat_model") or settings.chat_model
     _logger.info("llm_request", extra={"base_url": _base, "endpoint": "/chat/completions", "model": chat_model})
-    client = get_openai_client()
+    client = get_openai_chat_client()
     completion = client.chat.completions.create(
         model=chat_model,
         messages=[
@@ -237,11 +240,11 @@ def nitpick_verify(
     )
     import logging
     _logger = logging.getLogger("llm")
-    _base = get_resolved_base_url()
+    _base = get_resolved_chat_base_url()
     prof = get_profile(None)
     chat_model = prof.get("chat_model") or settings.chat_model
     _logger.info("llm_request", extra={"base_url": _base, "endpoint": "/chat/completions", "model": chat_model})
-    client = get_openai_client()
+    client = get_openai_chat_client()
     completion = client.chat.completions.create(
         model=chat_model,
         messages=[

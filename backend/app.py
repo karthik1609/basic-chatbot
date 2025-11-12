@@ -60,7 +60,7 @@ def create_app() -> FastAPI:
         allow_origins=allowed_origins,
         allow_credentials=True,
         allow_methods=["GET", "POST", "OPTIONS"],
-        allow_headers=["content-type", "authorization", "x-request-id", "x-api-key"],
+        allow_headers=["content-type", "authorization", "x-request-id", "x-api-key", "x-model-profile"],
     )
 
     class IngestResponse(BaseModel):
@@ -79,6 +79,22 @@ def create_app() -> FastAPI:
             req_id = uuid.uuid4().hex
         response = await call_next(request)
         response.headers["x-request-id"] = req_id
+        return response
+
+    # Per-request model profile selection via header or query param
+    @app.middleware("http")
+    async def apply_model_profile(request: Request, call_next):
+        from .config import settings as _settings
+        profile = request.headers.get("x-model-profile") or request.query_params.get("profile") or os.getenv("DEFAULT_MODEL_PROFILE", "openai-gpt5")
+        token = _settings.current_profile_id.set(str(profile))
+        try:
+            response = await call_next(request)
+        finally:
+            try:
+                _settings.current_profile_id.reset(token)
+            except Exception:
+                pass
+        response.headers["x-model-profile"] = str(profile)
         return response
 
     @app.post("/api/ingest", response_model=IngestResponse)
@@ -242,14 +258,14 @@ def create_app() -> FastAPI:
                 seed_data()
             except Exception:
                 logger.exception("Startup bootstrap: seeding failed")
-
-            logger.info("Startup bootstrap: ensuring docs/data and building index")
+            # Do not auto-ingest/build RAG index at startup; this depends on the user's selected model.
+            # Users should call /api/ingest (or upload docs) after selecting a model profile.
             try:
                 from .config import ensure_data_dirs
                 ensure_data_dirs()
-                build_or_update_index()
+                logger.info("Startup bootstrap: ensured docs/data directories only (no auto-ingest)")
             except Exception:
-                logger.exception("Startup bootstrap: ingestion failed")
+                logger.exception("Startup bootstrap: ensure_data_dirs failed")
         except Exception:
             logger.exception("Startup bootstrap encountered an unexpected error")
 

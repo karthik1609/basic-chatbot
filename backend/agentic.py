@@ -651,31 +651,31 @@ async def _run_agentic_chat_inner(message: str, language: str | None = None, ses
     # Only run nitpicker if there is evidence (docs and/or SQL)
     if docs_evidence or sql_query:
         for round_idx in range(1, 4):
-        docs_map = {}
-        for c in citations:
-            if c.get("type") == "doc" and c.get("tag") and c.get("text"):
-                docs_map[str(c["tag"]) ] = str(c.get("text") or "")
-        logger.info("stage=nitpicker_round", extra={"round": round_idx, "docs": len(docs_map)})
-        ver = pipeline_nitpick_verify(lang, normalized, answer_text, docs_map, sql_query, sql_rows)
-        raw_score = ver.get("compliance_score")
-        try:
-            score = float(raw_score)
-        except Exception:
-            score = 0.0
-        # Normalize to 0–100 if returned as 0–1
-        if 0.0 <= score <= 1.0:
-            score = score * 100.0
-        nitpicker_rounds.append({"round": round_idx, "score": score, "findings": ver.get("findings", [])})
+            docs_map = {}
+            for c in citations:
+                if c.get("type") == "doc" and c.get("tag") and c.get("text"):
+                    docs_map[str(c["tag"]) ] = str(c.get("text") or "")
+            logger.info("stage=nitpicker_round", extra={"round": round_idx, "docs": len(docs_map)})
+            ver = pipeline_nitpick_verify(lang, normalized, answer_text, docs_map, sql_query, sql_rows)
+            raw_score = ver.get("compliance_score")
+            try:
+                score = float(raw_score)
+            except Exception:
+                score = 0.0
+            # Normalize to 0–100 if returned as 0–1
+            if 0.0 <= score <= 1.0:
+                score = score * 100.0
+            nitpicker_rounds.append({"round": round_idx, "score": score, "findings": ver.get("findings", [])})
             if score >= threshold:
                 break
-        revised = ver.get("revised_answer")
-        patches = ver.get("patches")
-        # If a revised answer is provided, prefer it; else, re-compose with constraints
-        if isinstance(revised, str) and revised.strip():
-            answer_text = revised
-        else:
-            comp2 = pipeline_compose_answer(lang, normalized, slots, docs_evidence, sql_preview)
-            answer_text = comp2.get("answer", answer_text)
+            revised = ver.get("revised_answer")
+            patches = ver.get("patches")
+            # If a revised answer is provided, prefer it; else, re-compose with constraints
+            if isinstance(revised, str) and revised.strip():
+                answer_text = revised
+            else:
+                comp2 = pipeline_compose_answer(lang, normalized, slots, docs_evidence, sql_preview)
+                answer_text = comp2.get("answer", answer_text)
         if nitpicker_rounds:
             trace.append({"stage": "nitpicker", "rounds": nitpicker_rounds})
 

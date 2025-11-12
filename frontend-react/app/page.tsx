@@ -34,6 +34,7 @@ export default function ChatPage() {
   const [flowOpenFor, setFlowOpenFor] = useState<string | null>(null);
   const [lang, setLang] = useState<string>('en');
   const [uploading, setUploading] = useState(false);
+  const [model, setModel] = useState<string>('openai-gpt5');
 
   const endRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -48,6 +49,8 @@ export default function ChatPage() {
     setSessionId(sid);
     const savedLang = window.localStorage.getItem('lang');
     if (savedLang) setLang(savedLang);
+    const savedModel = window.localStorage.getItem('model_profile');
+    if (savedModel) setModel(savedModel);
   }, []);
 
   async function onSubmit(e?: React.FormEvent) {
@@ -58,7 +61,7 @@ export default function ChatPage() {
     setMessages(prev => [...prev, { id: crypto.randomUUID(), role: 'user', content: userText }]);
     setLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/api/agent/chat`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: userText, language: lang, session_id: sessionId }) });
+      const res = await fetch(`${API_BASE}/api/agent/chat`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-model-profile': model }, body: JSON.stringify({ message: userText, language: lang, session_id: sessionId }) });
       const data = await res.json();
       if (data.session_id) {
         window.localStorage.setItem('session_id', data.session_id);
@@ -99,10 +102,10 @@ export default function ChatPage() {
       toast(`Uploading ${file.name} ...`);
       const form = new FormData();
       form.append('file', file);
-      const r = await fetch(`${API_BASE}/api/docs/upload`, { method:'POST', body: form });
+      const r = await fetch(`${API_BASE}/api/docs/upload`, { method:'POST', body: form, headers: { 'x-model-profile': model } });
       if(!r.ok){ const t = await r.text(); throw new Error(t||`HTTP ${r.status}`); }
       const d = await r.json();
-      toast.success(`Uploaded ${d.saved || file.name}. Reindexed ${d.chunks_indexed ?? '?' } chunks`);
+      toast.success(`Uploaded ${d.saved || file.name}. Reindexed ${d.chunks_indexed ?? '?' } chunks for ${model}`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       toast.error(`Upload failed: ${msg}`);
@@ -159,9 +162,21 @@ export default function ChatPage() {
               <option value="fr">Français</option>
               <option value="es">Español</option>
             </select>
+            <label className="text-xs opacity-70" htmlFor="model-select">Model</label>
+            <select
+              id="model-select"
+              className="bg-background border border-border rounded px-2 py-1 text-xs"
+              value={model}
+              onChange={(e)=>{ const v = (e.target as HTMLSelectElement).value; setModel(v); window.localStorage.setItem('model_profile', v); }}
+              disabled={loading || uploading}
+            >
+              <option value="openai-gpt5">OpenAI: gpt-5</option>
+              <option value="local-runner">Local Runner</option>
+              <option value="mistral">Mistral</option>
+            </select>
           </div>
           <div className="flex gap-2">
-            <Button variant="secondary" onClick={async()=>{ try{ toast('Rebuilding index...'); const r=await fetch(`${API_BASE}/api/ingest`,{method:'POST'}); if(!r.ok){ const t=await r.text(); throw new Error(t||`HTTP ${r.status}`);} const d=await r.json(); toast.success(`Indexed ${d.chunks_indexed ?? '?' } chunks`);}catch(e){ const err = e instanceof Error ? e.message : String(e); toast.error(`Ingest failed: ${err}`);} }} disabled={loading}>
+            <Button variant="secondary" onClick={async()=>{ try{ toast(`Rebuilding index for ${model}...`); const r=await fetch(`${API_BASE}/api/ingest`,{method:'POST', headers:{'x-model-profile': model}}); if(!r.ok){ const t=await r.text(); throw new Error(t||`HTTP ${r.status}`);} const d=await r.json(); toast.success(`Indexed ${d.chunks_indexed ?? '?' } chunks`);}catch(e){ const err = e instanceof Error ? e.message : String(e); toast.error(`Ingest failed: ${err}`);} }} disabled={loading}>
               <Wand2 className="w-4 h-4 mr-1"/> Ingest
             </Button>
             <input
@@ -195,10 +210,10 @@ export default function ChatPage() {
             >
               {uploading ? 'Uploading...' : 'Upload PDF'}
             </Button>
-            <Button variant="secondary" onClick={async()=>{ try{ toast('Initializing DB...'); const r=await fetch(`${API_BASE}/api/db/init`,{method:'POST'}); if(!r.ok){ const t=await r.text(); throw new Error(t||`HTTP ${r.status}`);} const d=await r.json(); toast.success(`DB init: ${d.status||'ok'}`);}catch(e){ const err = e instanceof Error ? e.message : String(e); toast.error(`Init failed: ${err}`);} }} disabled={loading}>
+            <Button variant="secondary" onClick={async()=>{ try{ toast('Initializing DB...'); const r=await fetch(`${API_BASE}/api/db/init`,{method:'POST', headers:{'x-model-profile': model}}); if(!r.ok){ const t=await r.text(); throw new Error(t||`HTTP ${r.status}`);} const d=await r.json(); toast.success(`DB init: ${d.status||'ok'}`);}catch(e){ const err = e instanceof Error ? e.message : String(e); toast.error(`Init failed: ${err}`);} }} disabled={loading}>
               <Database className="w-4 h-4 mr-1"/> Init DB
             </Button>
-            <Button variant="secondary" onClick={async()=>{ try{ toast('Seeding DB...'); const r=await fetch(`${API_BASE}/api/db/seed`,{method:'POST'}); if(!r.ok){ const t=await r.text(); throw new Error(t||`HTTP ${r.status}`);} const d=await r.json(); toast.success(`DB seed: ${d.status||'ok'}`);}catch(e){ const err = e instanceof Error ? e.message : String(e); toast.error(`Seed failed: ${err}`);} }} disabled={loading}>
+            <Button variant="secondary" onClick={async()=>{ try{ toast('Seeding DB...'); const r=await fetch(`${API_BASE}/api/db/seed`,{method:'POST', headers:{'x-model-profile': model}}); if(!r.ok){ const t=await r.text(); throw new Error(t||`HTTP ${r.status}`);} const d=await r.json(); toast.success(`DB seed: ${d.status||'ok'}`);}catch(e){ const err = e instanceof Error ? e.message : String(e); toast.error(`Seed failed: ${err}`);} }} disabled={loading}>
               <DatabaseBackup className="w-4 h-4 mr-1"/> Seed DB
             </Button>
             <Button variant="secondary" onClick={onNewChat} disabled={loading}>New Chat</Button>
